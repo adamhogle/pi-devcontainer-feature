@@ -1,0 +1,41 @@
+name: publish
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false        # never cancel half a publish
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # ghcr paths must be lowercase; a renamed owner would otherwise produce a
+      # coordinate that publishes fine and cannot be pulled.
+      - id: ns
+        run: echo "namespace=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - run: >
+          npx --yes @devcontainers/cli@0.88.0 features publish src
+          --registry ghcr.io
+          --namespace "${{ steps.ns.outputs.namespace }}"

@@ -1,6 +1,7 @@
 // Validate devcontainer-feature.json against the invariants this feature relies on.
-// CI cannot execute install.sh (no Docker-in-Docker on shared runners), so this is
-// the only automated gate on the metadata.
+// CI also executes install.sh itself, in a bare Debian image (the validate
+// workflow's smoke job); this gate is the metadata-side counterpart, checked on
+// every pull request and push to main.
 import { readFileSync } from "node:fs";
 
 const path = process.env.FEATURE_JSON ?? "src/pi/devcontainer-feature.json";

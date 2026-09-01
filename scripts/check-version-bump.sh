@@ -6,7 +6,7 @@
 set -euo pipefail
 
 FEATURE_JSON=${FEATURE_JSON:-src/pi/devcontainer-feature.json}
-target=${CI_MERGE_REQUEST_TARGET_BRANCH_NAME:-main}
+target=${GITHUB_BASE_REF:-main}
 
 read_version() {
   node -e '

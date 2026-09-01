@@ -1,0 +1,66 @@
+name: validate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true          # replaces GitLab's `interruptible: true`
+
+jobs:
+  feature-metadata:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: node scripts/check-feature-metadata.mjs
+
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: bash scripts/check-contract.sh
+
+  # Debian, because that is the developer's machine. Neither koalaman image serves:
+  # shellcheck-alpine is Alpine, and shellcheck:stable is FROM scratch — a 16 MB
+  # static binary with no /bin/sh (both verified against the registry). apt on
+  # debian:trixie-slim is seconds, gives the same shellcheck the local machine has,
+  # and reuses the smoke job's base image. Run as a one-shot container rather than
+  # as `container:` because actions/checkout needs libstdc++, absent from slim Debian.
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint with shellcheck on Debian
+        run: |
+          docker run --rm -v "$PWD:/w:ro" -w /w docker.io/library/debian:trixie-slim sh -c '
+            apt-get update -qq
+            apt-get install -y -qq --no-install-recommends shellcheck
+            shellcheck --shell=sh src/pi/install.sh
+            shellcheck --shell=bash bin/dev-up bin/dev-pi bin/dev-down install.sh scripts/*.sh
+          '
+
+  # The check GitLab could never run: no Docker-in-Docker on those shared runners.
+  # GitHub-hosted runners have Docker, so install.sh is now actually executed.
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          {
+            cat src/pi/install.sh
+            echo 'if command -v node >/dev/null 2>&1; then echo "FAIL: node is on PATH" >&2; exit 1; fi'
+            echo 'for t in rg fd; do command -v "$t" >/dev/null 2>&1 || { echo "FAIL: $t missing from PATH" >&2; exit 1; }; done'
+            echo 'pi --version'
+          } | docker run --rm -i --user root -e _REMOTE_USER=root debian:trixie-slim sh -s
