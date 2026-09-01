@@ -1,0 +1,6 @@
+# planning / agent scratch — never part of the published repo
+.pi/
+
+node_modules/
+.DS_Store
+*.log

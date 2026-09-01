@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Stop and remove the dev container for a workspace folder (default: current dir).
+set -euo pipefail
+
+folder=$(cd "${1:-.}" && pwd)
+
+mapfile -t ids < <(podman ps -aq --filter "label=devcontainer.local_folder=$folder")
+
+if [ "${#ids[@]}" -eq 0 ]; then
+  echo "dev-down: no dev container found for $folder"
+  exit 0
+fi
+
+echo "dev-down: removing ${#ids[@]} container(s) for $folder"
+podman rm -f "${ids[@]}"

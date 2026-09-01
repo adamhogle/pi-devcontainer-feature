@@ -1,0 +1,201 @@
+#!/usr/bin/env bash
+# Run pi inside the dev container for the current workspace.
+#
+# Usage: envchain sdc,gitlab dev-pi [pi args...]
+#
+# This is a strict attach: it never falls back to running pi on the host. If the
+# container is missing, unprovisioned or stale, it fails and tells you to run
+# dev-up. Credentials come from the invoking environment (envchain) and are
+# filtered through the hard-coded allowlist below -- that list lives here, in a
+# host-only file, so an agent inside the container cannot widen it.
+#
+# Env knobs:
+#   DEV_PI_ALLOW_SKEW=1   tolerate a host/container pi version mismatch
+set -euo pipefail
+
+PI_AGENT_DIR=${DEV_PI_AGENT_DIR:-$HOME/.pi/agent}
+PI_AGENT_TARGET=/opt/pi/agent
+PI_SSH_TARGET=/ssh-agent
+
+# --- credential allowlist --------------------------------------------------
+# Union of the envchain namespaces: sdc gitlab azure jira artifactory
+# sonarqube bedrock. envchain decides what you are carrying this session; this
+# list decides what may ever cross the boundary. Only vars actually set are
+# passed, and values travel via podman's environment, never on the argv.
+FORWARD_ENV=(
+  # sdc -- at least one provider key is required or pi cannot reach a model
+  ANTHROPIC_API_KEY ANTHROPIC_BASE_URL OPENAI_API_KEY GOOGLE_GENERATIVE_AI_API_KEY
+  LITELLM_MASTER_KEY CODE_SCAN_TOKEN
+  # gitlab
+  GITLAB_HOST GITLAB_TOKEN GITLAB_NPM_TOKEN
+  # azure
+  AZURE_DEVOPS_USER_EMAIL AZURE_DEVOPS_ORG_URL AZURE_DEVOPS_EXT_PAT
+  # jira / confluence
+  JIRA_URL JIRA_USERNAME JIRA_PASSWORD
+  CONFLUENCE_URL CONFLUENCE_USERNAME CONFLUENCE_PASSWORD
+  # artifactory
+  ARTIFACTORY_READER_USERNAME ARTIFACTORY_READER_API_KEY
+  # sonarqube
+  SONARQUBE_TOKEN
+  # bedrock
+  AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+)
+# SSH_AUTH_SOCK is deliberately absent: it is the one variable whose value must
+# differ across the boundary, and it is set explicitly further down.
+
+PROVIDER_KEYS=(ANTHROPIC_API_KEY OPENAI_API_KEY GOOGLE_GENERATIVE_AI_API_KEY)
+
+die() { echo "dev-pi: $*" >&2; exit 1; }
+
+# Identical rule to dev-up, so both agree on folder identity.
+resolve_root() {
+  local d
+  d=$(cd "$1" 2>/dev/null && pwd) || return 1
+  while :; do
+    if [ -e "$d/.devcontainer/devcontainer.json" ] || [ -e "$d/.devcontainer.json" ]; then
+      printf '%s\n' "$d"
+      return 0
+    fi
+    [ "$d" = / ] && return 1
+    d=$(dirname "$d")
+  done
+}
+
+root=$(resolve_root .) || die "no devcontainer.json in $PWD or any parent"
+
+# --- locate the container --------------------------------------------------
+mapfile -t running < <(podman ps -q --filter "label=pi.box.folder=$root")
+
+if [ "${#running[@]}" -eq 0 ]; then
+  if [ -n "$(podman ps -aq --filter "label=pi.box.folder=$root")" ]; then
+    die "pi container for $root exists but is stopped.
+    Run: dev-up   (not podman start -- only devcontainer up re-runs postStartCommand)"
+  fi
+  if [ -n "$(podman ps -q --filter "label=devcontainer.local_folder=$root")" ]; then
+    die "a dev container for $root is running, but it was not provisioned by dev-up
+    (started by VS Code or a bare 'devcontainer up'), so it has no pi.
+    Run: dev-up   -- note you will then have two containers on this worktree"
+  fi
+  die "no dev container for $root.
+    Run: dev-up"
+fi
+
+if [ "${#running[@]}" -gt 1 ]; then
+  echo "dev-pi: ${#running[@]} pi containers match $root:" >&2
+  podman ps --filter "label=pi.box.folder=$root" \
+            --format '  {{.ID}}  {{.Names}}  {{.Image}}' >&2
+  die "refusing to guess. Run: dev-down && dev-up"
+fi
+
+cid=${running[0]}
+
+# --- read what the container actually is -----------------------------------
+# Verify real state rather than a hash of intent: a spec hash can match while
+# reality has drifted (socket recreated, mount removed).
+eval "$(podman inspect "$cid" --format '{{json .}}' | python3 -c '
+import json, shlex, sys
+
+c = json.load(sys.stdin)
+labels = (c.get("Config") or {}).get("Labels") or {}
+mounts = c.get("Mounts") or []
+
+# devcontainer.metadata is either an object or an array of fragments; normalise
+# and merge last-wins so feature-injected users are honoured.
+meta = labels.get("devcontainer.metadata") or "[]"
+try:
+    frags = json.loads(meta)
+except ValueError:
+    frags = []
+if isinstance(frags, dict):
+    frags = [frags]
+
+user = ""
+for f in frags:
+    if not isinstance(f, dict):
+        continue
+    for key in ("containerUser", "remoteUser"):
+        if f.get(key):
+            user = f[key]
+
+by_dest = {m.get("Destination"): m.get("Source") for m in mounts}
+by_src  = {m.get("Source"): m.get("Destination") for m in mounts}
+
+out = {
+    "C_USER": user or (c.get("Config") or {}).get("User") or "root",
+    "C_AGENT_SRC": by_dest.get("/opt/pi/agent", ""),
+    "C_SSH_SRC": by_dest.get("/ssh-agent", ""),
+    "C_WORKSPACE": by_src.get(sys.argv[1] if len(sys.argv) > 1 else "", ""),
+}
+for k, v in out.items():
+    print(f"{k}={shlex.quote(v)}")
+' "$root")"
+
+[ -n "$C_WORKSPACE" ] || die "container has no bind mount for $root. Run: dev-up"
+
+if [ "$C_AGENT_SRC" != "$PI_AGENT_DIR" ]; then
+  die "container's $PI_AGENT_TARGET is '${C_AGENT_SRC:-<not mounted>}', expected '$PI_AGENT_DIR'.
+    Provisioned by an older dev-up. Run: dev-up"
+fi
+
+if [ -n "${SSH_AUTH_SOCK:-}" ] && [ "$C_SSH_SRC" != "$SSH_AUTH_SOCK" ]; then
+  die "container's $PI_SSH_TARGET is '${C_SSH_SRC:-<not mounted>}', host agent is '$SSH_AUTH_SOCK'.
+    The forwarded socket is stale. Run: dev-up"
+fi
+
+# --- verify pi, and that it matches the host -------------------------------
+if ! c_pi_version=$(podman exec -u "$C_USER" "$cid" sh -lc 'command -v pi >/dev/null && pi --version' 2>/dev/null | tr -d '[:space:]'); then
+  c_pi_version=""
+fi
+[ -n "$c_pi_version" ] || die "container has no pi on PATH -- created without the pi feature.
+    Run: dev-up"
+
+if command -v pi >/dev/null 2>&1; then
+  h_pi_version=$(pi --version 2>/dev/null | tr -d '[:space:]')
+  if [ -n "$h_pi_version" ] && [ "$h_pi_version" != "$c_pi_version" ]; then
+    if [ "${DEV_PI_ALLOW_SKEW:-0}" != "1" ]; then
+      die "pi version skew: host $h_pi_version, container $c_pi_version.
+    Run: dev-up   (or set DEV_PI_ALLOW_SKEW=1 to proceed anyway)"
+    fi
+    echo "dev-pi: warning: version skew host $h_pi_version vs container $c_pi_version" >&2
+  fi
+fi
+
+# --- credentials -----------------------------------------------------------
+env_args=()
+for v in "${FORWARD_ENV[@]}"; do
+  [ -n "${!v+x}" ] && env_args+=(-e "$v")
+done
+
+have_provider=0
+for v in "${PROVIDER_KEYS[@]}"; do
+  [ -n "${!v:-}" ] && have_provider=1
+done
+[ "$have_provider" -eq 1 ] || die "no provider credential in environment.
+    pi runs inside the container now, so it needs the key itself.
+    Run: envchain sdc dev-pi ${*:-}"
+
+# Set explicitly: config dir at the fixed mount, no startup network, and the
+# container-side path of the forwarded agent socket.
+env_args+=(-e "PI_CODING_AGENT_DIR=$PI_AGENT_TARGET" -e "PI_OFFLINE=1")
+[ -n "$C_SSH_SRC" ] && env_args+=(-e "SSH_AUTH_SOCK=$PI_SSH_TARGET")
+for v in TERM COLORTERM LANG; do
+  [ -n "${!v:-}" ] && env_args+=(-e "$v")
+done
+
+# --- land in the mirrored subdirectory -------------------------------------
+rel=$(realpath --relative-to="$root" "$PWD")
+if [ "$rel" = "." ]; then
+  cwd=$C_WORKSPACE
+else
+  cwd=$C_WORKSPACE/$rel
+fi
+
+# Interactive only when we actually have a terminal, so `echo ... | dev-pi -p`
+# and other non-interactive uses keep working.
+tty_args=(-i)
+[ -t 0 ] && [ -t 1 ] && tty_args=(-it)
+
+exec podman exec "${tty_args[@]}" \
+  -u "$C_USER" -w "$cwd" \
+  "${env_args[@]}" \
+  "$cid" pi "$@"

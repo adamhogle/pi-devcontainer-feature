@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+# (Re)start the dev container for a workspace folder (default: current dir).
+#
+# Usage: dev-up [--rebuild] [--no-pi] [folder]
+#   --rebuild   rebuild the image from scratch (--build-no-cache)
+#   --no-pi     plain dev container: no pi feature, no pi mounts, no pi label
+#
+# Provisioning for pi is applied here and nowhere else: the repo's
+# devcontainer.json must never mention pi. This script owns every coupling
+# between the container and this host (pi itself, ~/.pi/agent, the ssh-agent
+# socket). Secrets are NOT passed here -- dev-pi injects those per session.
+set -euo pipefail
+
+# --- pi provisioning knobs -------------------------------------------------
+PI_FEATURE=${DEV_PI_FEATURE:-cr.siemens.com/ogleah/pi-devcontainer-feature/pi:1}
+PI_AGENT_DIR=${DEV_PI_AGENT_DIR:-$HOME/.pi/agent}
+PI_AGENT_TARGET=/opt/pi/agent
+PI_SSH_TARGET=/ssh-agent
+
+rebuild=0
+with_pi=1
+target=.
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --rebuild|--no-cache)
+      rebuild=1
+      ;;
+    --no-pi)
+      with_pi=0
+      ;;
+    -h|--help)
+      sed -n '2,6p' "$0" | cut -c3-
+      exit 0
+      ;;
+    -*)
+      echo "dev-up: unknown option: $1" >&2
+      exit 2
+      ;;
+    *)
+      target=$1
+      ;;
+  esac
+  shift
+done
+
+# Resolve the workspace root by walking up to the nearest devcontainer config.
+# dev-pi uses the identical rule, so both agree on the folder identity.
+resolve_root() {
+  local d
+  d=$(cd "$1" 2>/dev/null && pwd) || return 1
+  while :; do
+    if [ -e "$d/.devcontainer/devcontainer.json" ] || [ -e "$d/.devcontainer.json" ]; then
+      printf '%s\n' "$d"
+      return 0
+    fi
+    [ "$d" = / ] && return 1
+    d=$(dirname "$d")
+  done
+}
+
+if ! folder=$(resolve_root "$target"); then
+  echo "dev-up: no devcontainer.json found in $target or any parent" >&2
+  exit 1
+fi
+
+args=(
+  up
+  --workspace-folder "$folder"
+  --remove-existing-container
+  --docker-path podman
+)
+
+if [ "$with_pi" -eq 1 ]; then
+  if [ ! -d "$PI_AGENT_DIR" ]; then
+    echo "dev-up: pi config dir not found: $PI_AGENT_DIR" >&2
+    echo "dev-up: set DEV_PI_AGENT_DIR, or pass --no-pi" >&2
+    exit 1
+  fi
+
+  if ! command -v pi >/dev/null 2>&1; then
+    echo "dev-up: host pi not found; cannot pin the container's pi version" >&2
+    echo "dev-up: install pi on the host, or pass --no-pi" >&2
+    exit 1
+  fi
+  pi_version=$(pi --version 2>/dev/null | tr -d '[:space:]')
+  if [ -z "$pi_version" ]; then
+    echo "dev-up: could not read host pi version" >&2
+    exit 1
+  fi
+
+  # Identity label: unique per folder AND marks this container as pi-provisioned,
+  # so it never collides with a container VS Code started for the same folder.
+  args+=(--id-label "pi.box.folder=$folder")
+
+  # The whole agent config dir, read/write, at a fixed user-independent path.
+  # Fixed path means we do not need to know remoteUser before the container exists.
+  args+=(--mount "type=bind,source=$PI_AGENT_DIR,target=$PI_AGENT_TARGET")
+
+  # ssh-agent socket. Bind mounts are creation-time only, so the mount lives
+  # here; dev-pi sets SSH_AUTH_SOCK to point at it.
+  if [ -n "${SSH_AUTH_SOCK:-}" ] && [ -S "${SSH_AUTH_SOCK}" ]; then
+    args+=(--mount "type=bind,source=$SSH_AUTH_SOCK,target=$PI_SSH_TARGET")
+  else
+    echo "dev-up: warning: no usable SSH_AUTH_SOCK on the host; git over ssh will not work in the container" >&2
+  fi
+
+  # pi itself, as an image layer. Version is pinned to the host's pi so the
+  # image hash changes exactly when you upgrade, and never otherwise.
+  args+=(--additional-features "{\"$PI_FEATURE\":{\"version\":\"$pi_version\"}}")
+
+  # The feature lives in an internal registry, so pulling it needs credentials.
+  # Mint them per invocation from the environment (envchain) rather than leaving a
+  # PAT in ~/.docker/config.json. The devcontainer CLI honours DOCKER_CONFIG.
+  registry=${PI_FEATURE%%/*}
+  if [ -n "${GITLAB_TOKEN:-}" ]; then
+    docker_config=$(mktemp -d)
+    trap 'rm -rf "$docker_config"' EXIT INT TERM
+    umask 077
+    printf '{"auths":{"%s":{"auth":"%s"}}}\n' "$registry" \
+      "$(printf '%s:%s' "${DEV_PI_REGISTRY_USER:-$USER}" "$GITLAB_TOKEN" | base64 -w0)" \
+      > "$docker_config/config.json"
+    export DOCKER_CONFIG="$docker_config"
+  elif [ ! -f "${DOCKER_CONFIG:-$HOME/.docker}/config.json" ]; then
+    echo "dev-up: warning: no GITLAB_TOKEN and no docker config; pulling $PI_FEATURE will fail" >&2
+    echo "dev-up: run as: envchain gitlab dev-up" >&2
+  fi
+fi
+
+if [ "$rebuild" -eq 1 ]; then
+  echo "dev-up: rebuilding image from scratch for $folder"
+  args+=(--build-no-cache)
+else
+  echo "dev-up: (re)starting dev container for $folder"
+fi
+
+if [ "$with_pi" -eq 1 ]; then
+  echo "dev-up: provisioning pi $pi_version via $PI_FEATURE"
+else
+  echo "dev-up: pi provisioning disabled (--no-pi)"
+fi
+
+# Not exec: the EXIT trap has to fire so the minted credential is removed.
+devcontainer "${args[@]}"
+status=$?
+exit "$status"

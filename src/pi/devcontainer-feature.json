@@ -1,0 +1,32 @@
+{
+  "id": "pi",
+  "version": "1.1.0",
+  "name": "pi coding agent",
+  "description": "Installs the pi coding agent with a private Node runtime that is kept off PATH, so it cannot shadow the workspace toolchain, plus ripgrep and fd on PATH so pi never downloads them at runtime.",
+  "options": {
+    "version": {
+      "type": "string",
+      "default": "latest",
+      "description": "npm version of @earendil-works/pi-coding-agent. dev-up pins this to the host's pi version so the image hash changes exactly when you upgrade."
+    },
+    "nodeVersion": {
+      "type": "string",
+      "default": "24.19.0",
+      "description": "Private Node runtime installed under /opt/pi/node. Never added to PATH."
+    },
+    "ripgrepVersion": {
+      "type": "string",
+      "default": "15.2.0",
+      "description": "ripgrep installed to /usr/local/bin/rg. pi resolves rg from its tools dir, then PATH, and downloads it from GitHub if neither has it; baking it in avoids that at runtime."
+    },
+    "fdVersion": {
+      "type": "string",
+      "default": "10.4.2",
+      "description": "fd installed to /usr/local/bin/fd. Same rationale as ripgrep: pi otherwise downloads it from GitHub on first use."
+    }
+  },
+  "containerEnv": {
+    "PI_CODING_AGENT_DIR": "/opt/pi/agent",
+    "PI_OFFLINE": "1"
+  }
+}
