@@ -5,7 +5,7 @@
 Everything needed to run pi *inside* a dev container instead of on the host:
 
 * **`src/pi`** — a [dev container feature](https://containers.dev/implementors/features/) that
-  installs pi into the image, published to this project's registry.
+  installs pi into the image, published to `ghcr.io/adamhogle/pi-devcontainer-feature/pi`.
 * **`bin/dev-up`, `bin/dev-pi`, `bin/dev-down`** — the host scripts that provision, attach to,
   and tear down the container.
 
@@ -37,12 +37,13 @@ One repo, two independent things to ship. Do not conflate them:
 
 | Track | Artefact | Released by |
 | --- | --- | --- |
-| `src/**` | OCI feature at `cr.siemens.com/ogleah/pi-devcontainer-feature/pi` | CI, on merge to main |
+| `src/**` | OCI feature at `ghcr.io/adamhogle/pi-devcontainer-feature/pi` | CI, on merge to main |
 | `bin/**` | Host scripts symlinked into `~/.local/bin` by `./install.sh` | `git pull` — the install is symlinks, so a pull *is* the release |
 
-The `version-bump` and `publish` jobs are scoped to `changes: [src/**/*]`. A change that only
-touches `bin/` must **not** bump the feature version: it would republish a byte-identical
-feature and move `:1` for nothing. Conversely, any change under `src/` must bump it.
+The `version-bump` and `publish` workflows are scoped by `paths: ['src/**']`. A change that
+only touches `bin/` must **not** bump the feature version: it would republish a
+byte-identical feature and move `:1` for nothing. Conversely, any change under `src/` must
+bump it.
 
 ## Versioning
 
@@ -73,26 +74,29 @@ and be worthless.
 
 A **major** bump also moves the published major tag to `:2`, which `dev-up` does not track.
 Coordinate the change to `PI_FEATURE` in `~/.local/bin/dev-up` in the same session, and say
-so explicitly in the merge request description.
+so explicitly in the pull request description.
 
-CI enforces the bump on every merge request (`version-bump` job), comparing against the
-target branch. It cannot enforce that you picked the *right* increment — that is your job.
+CI enforces the bump on every pull request (`version-bump` workflow), comparing against the
+base branch. It cannot enforce that you picked the *right* increment — that is your job.
 
 ## Merging
 
-* **Squash every merge request into a single commit.** One MR = one commit on main.
-  Enable *Squash commits* on the MR and keep the squash commit message meaningful — it is
+* **Squash every pull request into a single commit.** One PR = one commit on main.
+  Enable *Squash commits* on the PR and keep the squash commit message meaningful — it is
   the only thing that survives.
-* **Never push directly to main.** Work on a branch, open an MR, let CI run. The
-  `version-bump` gate only runs on merge request pipelines, so a direct push bypasses it.
-* Commit messages follow [Conventional Commits](https://code.siemens.com/siemens/code/-/blob/main/CONTRIBUTING.md),
+* **Never push directly to main.** Work on a branch, open a PR, let CI run. The
+  `version-bump` workflow is path-scoped to `src/**` and only runs on pull request events,
+  so a direct push bypasses it.
+* Commit messages follow [Conventional Commits](https://www.conventionalcommits.org),
   `type(scope): short imperative summary`. Useful scopes here: `feature`, `ci`, `docs`.
 
-## Verify locally — CI cannot
+## Verify install.sh
 
-code.siemens.com shared runners have no Docker-in-Docker, so the pipeline only lints the
-metadata and publishes the tarball. **It never executes `install.sh`.** Any change to
-`install.sh` must be run by hand before opening a merge request:
+GitHub-hosted runners have Docker, so CI executes `install.sh` on every pull request: the
+`smoke` job in `.github/workflows/validate.yml` pipes it into `debian:trixie-slim`, where it
+installs pi and asserts `pi --version`, `node` off `PATH`, and `rg`/`fd` on `PATH`.
+
+The same smoke test, locally, via podman:
 
 ```sh
 { cat src/pi/install.sh; echo 'command -v node || echo "node off PATH: correct"'; echo 'pi --version'; } \
@@ -104,15 +108,16 @@ metadata and publishes the tarball. **It never executes `install.sh`.** Any chan
 It passes when pi prints a version **and** `node` is absent from `PATH`. Use a base image
 without node (`debian:trixie-slim`) — that is the case the private-runtime design exists for.
 
-Run the same checks CI does:
+Run the checks CI runs (the `shellcheck` job installs shellcheck on `debian:trixie-slim`;
+locally, use the same recipe or `sudo apt-get install -y shellcheck`):
 
 ```sh
 node scripts/check-feature-metadata.mjs
 bash scripts/check-contract.sh
-podman run --rm -v "$PWD:/w:ro,Z" -w /w --entrypoint shellcheck \
-  docker.io/koalaman/shellcheck-alpine:stable --shell=sh src/pi/install.sh
-podman run --rm -v "$PWD:/w:ro,Z" -w /w --entrypoint shellcheck \
-  docker.io/koalaman/shellcheck-alpine:stable --shell=bash bin/dev-up bin/dev-pi bin/dev-down
+podman run --rm -v "$PWD:/w:ro,Z" -w /w docker.io/library/debian:trixie-slim sh -c \
+  'apt-get update -qq && apt-get install -y -qq --no-install-recommends shellcheck \
+    && shellcheck --shell=sh src/pi/install.sh \
+    && shellcheck --shell=bash bin/dev-up bin/dev-pi bin/dev-down install.sh scripts/*.sh'
 ```
 
 Changes to `bin/` take effect immediately — `install.sh` creates symlinks, so the checkout is
@@ -198,7 +203,7 @@ bin/dev-pi                         strict attach: verify, then podman exec pi
 bin/dev-down                       remove containers for a workspace folder
 install.sh                         symlink bin/* into ~/.local/bin
 scripts/check-feature-metadata.mjs metadata gate
-scripts/check-version-bump.sh      version gate (merge requests, src/ only)
+scripts/check-version-bump.sh      version gate (pull requests, src/ only)
 scripts/check-contract.sh          cross-component contract gate
-.gitlab-ci.yml                     lint + publish to cr.siemens.com
+.github/workflows/                 CI: validate, version-bump, publish to ghcr.io
 ```
