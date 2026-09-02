@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Assert that the three components agree on the contract they share.
+# Assert that the components agree on the contract they share.
 #
-# The feature, dev-up and dev-pi are separate artefacts with no runtime coupling:
-# dev-up writes a label and mounts paths, dev-pi looks them up, the feature bakes
-# the same paths into the image. Nothing at runtime would notice if one of them
-# drifted -- dev-pi would simply stop finding containers dev-up created, or would
-# verify a mount nobody makes. This is the check that catches that.
+# The feature, dev-up, dev-pi and dev-down are separate artefacts with no runtime
+# coupling: dev-up writes a label and mounts paths, dev-pi looks them up, dev-down
+# reads the label to find what to remove, the feature bakes the same paths into
+# the image. Nothing at runtime would notice if one of them drifted -- dev-pi
+# would simply stop finding containers dev-up created, dev-down would remove
+# containers under the wrong identity, or dev-pi would verify a mount nobody
+# makes. This is the check that catches that.
 set -euo pipefail
 
 fail=0
@@ -15,18 +17,23 @@ err() {
 }
 
 # --- resolve_root() must be identical -------------------------------------
-# Both scripts must agree on what "the workspace root" means, or dev-pi looks up
-# a pi.box.folder value dev-up never wrote.
+# All three scripts must agree on what "the workspace root" means, or dev-pi
+# looks up a pi.box.folder value dev-up never wrote, and dev-down tears down
+# containers under an identity neither of them wrote.
 extract_fn() { awk '/^resolve_root\(\) \{/,/^\}/' "$1"; }
 
 up_fn=$(extract_fn bin/dev-up)
 pi_fn=$(extract_fn bin/dev-pi)
+down_fn=$(extract_fn bin/dev-down)
 
 [ -n "$up_fn" ] || err "resolve_root() not found in bin/dev-up"
 [ -n "$pi_fn" ] || err "resolve_root() not found in bin/dev-pi"
-if [ -n "$up_fn" ] && [ -n "$pi_fn" ] && [ "$up_fn" != "$pi_fn" ]; then
-  err "resolve_root() differs between bin/dev-up and bin/dev-pi; folder identity would drift"
+[ -n "$down_fn" ] || err "resolve_root() not found in bin/dev-down"
+if [ -n "$up_fn" ] && [ -n "$pi_fn" ] && [ -n "$down_fn" ] \
+   && { [ "$up_fn" != "$pi_fn" ] || [ "$up_fn" != "$down_fn" ]; }; then
+  err "resolve_root() differs between bin/dev-up, bin/dev-pi and bin/dev-down; folder identity would drift"
   diff <(printf '%s\n' "$up_fn") <(printf '%s\n' "$pi_fn") >&2 || true
+  diff <(printf '%s\n' "$up_fn") <(printf '%s\n' "$down_fn") >&2 || true
 fi
 
 # --- shared literals must appear everywhere they are relied on ------------
@@ -39,7 +46,7 @@ expect_in() {
 }
 
 expect_in /ssh-agent bin/dev-up bin/dev-pi
-expect_in pi.box.folder bin/dev-up bin/dev-pi
+expect_in pi.box.folder bin/dev-up bin/dev-pi bin/dev-down
 
 # --- the agent dir must resolve to the same path everywhere -----------------
 # Compare resolved values, not literals: install.sh composes its paths from

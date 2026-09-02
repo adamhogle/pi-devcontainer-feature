@@ -2,13 +2,32 @@
 # Stop and remove the dev container for a workspace folder (default: current dir).
 set -euo pipefail
 
-folder=$(cd "${1:-.}" && pwd)
+# Same rule as dev-up and dev-pi, so all three agree on folder identity.
+resolve_root() {
+  local d
+  d=$(cd "$1" 2>/dev/null && pwd) || return 1
+  while :; do
+    if [ -e "$d/.devcontainer/devcontainer.json" ] || [ -e "$d/.devcontainer.json" ]; then
+      printf '%s\n' "$d"
+      return 0
+    fi
+    [ "$d" = / ] && return 1
+    d=$(dirname "$d")
+  done
+}
+
+target="${1:-.}"
+if ! folder=$(resolve_root "$target" 2>/dev/null); then
+  folder=$(cd "$target" && pwd)
+fi
 
 # Two identity labels can mark a workspace's container, and a container can carry
-# either without the other: the pi-provisioned one carries pi.box.folder (written
-# by dev-up; observed absent on some devcontainer CLI versions), a VS Code-started
-# one carries devcontainer.local_folder. Matching only one label misses the other,
-# which would leave an orphaned container behind while claiming nothing was found.
+# either without the other: passing --id-label REPLACES the devcontainer CLI's
+# default labels rather than adding to them, so a dev-up container has
+# pi.box.folder (written by dev-up) and no devcontainer.local_folder, while a
+# VS Code or bare `devcontainer up` container has the reverse. Matching both
+# labels is right either way -- matching only one would leave an orphaned
+# container behind while claiming nothing was found.
 mapfile -t ids < <({ podman ps -aq --filter "label=pi.box.folder=$folder"
                      podman ps -aq --filter "label=devcontainer.local_folder=$folder"
                    } | sort -u)

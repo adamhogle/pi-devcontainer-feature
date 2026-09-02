@@ -26,8 +26,8 @@ finding containers `dev-up` created, or verify a mount nobody makes.
 | --- | --- | --- |
 | `/opt/pi/agent` | feature `containerEnv`, `install.sh` | `dev-up` mount target, `dev-pi` verify |
 | `/ssh-agent` | `dev-up` mount target | `dev-pi` sets `SSH_AUTH_SOCK` to it |
-| `pi.box.folder=<root>` | `dev-up` `--id-label` | `dev-pi` container lookup |
-| `resolve_root()` | `dev-up` | `dev-pi` — must be **byte-identical** |
+| `pi.box.folder=<root>` | `dev-up` `--id-label` | `dev-pi` container lookup, `dev-down` cleanup |
+| `resolve_root()` | shared by all three | `dev-pi` and `dev-down` — must be **byte-identical** |
 
 `scripts/check-contract.sh` enforces all of it in CI. Run it after touching any of them.
 
