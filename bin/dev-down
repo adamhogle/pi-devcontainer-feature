@@ -4,7 +4,14 @@ set -euo pipefail
 
 folder=$(cd "${1:-.}" && pwd)
 
-mapfile -t ids < <(podman ps -aq --filter "label=devcontainer.local_folder=$folder")
+# Two identity labels can mark a workspace's container, and a container can carry
+# either without the other: the pi-provisioned one carries pi.box.folder (written
+# by dev-up; observed absent on some devcontainer CLI versions), a VS Code-started
+# one carries devcontainer.local_folder. Matching only one label misses the other,
+# which would leave an orphaned container behind while claiming nothing was found.
+mapfile -t ids < <({ podman ps -aq --filter "label=pi.box.folder=$folder"
+                     podman ps -aq --filter "label=devcontainer.local_folder=$folder"
+                   } | sort -u)
 
 if [ "${#ids[@]}" -eq 0 ]; then
   echo "dev-down: no dev container found for $folder"
