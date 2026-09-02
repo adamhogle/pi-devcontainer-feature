@@ -37,9 +37,18 @@ Usage:
 
 ```sh
 dev-up                          # provision (anonymous pull; the package is public)
-envchain sdc,gitlab dev-pi      # attach and run pi inside the container
+envchain sdc,gitlab DEV_PI_FORWARD=ANTHROPIC_API_KEY dev-pi
 dev-down                        # remove the container
 ```
+
+`DEV_PI_FORWARD` is now required: `dev-pi` no longer ships a built-in credential
+allowlist. Set it in your shell profile to a comma-separated list of variable
+*names* — never values — and the provider keys (`ANTHROPIC_API_KEY`,
+`OPENAI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`) must be among them and
+exported on the host. Running `dev-pi` with the variable unset prints the old
+23-name list, ready for pasting, if you want it as a starting point;
+`DEV_PI_FORWARD=""` forwards nothing on purpose. `envchain` is unchanged — it
+puts the *values* in the host env, and `DEV_PI_FORWARD` filters them by name.
 
 `dev-up` pulls without credentials. It honours a `GHCR_TOKEN` (with
 `DEV_PI_REGISTRY_USER` set to your GitHub login) as an optional fallback if the

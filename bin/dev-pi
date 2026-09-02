@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
 # Run pi inside the dev container for the current workspace.
 #
-# Usage: envchain sdc,gitlab dev-pi [pi args...]
+# Usage: DEV_PI_FORWARD=NAME[,NAME...] dev-pi [pi args...]
 #
 # This is a strict attach: it never falls back to running pi on the host. If the
 # container is missing, unprovisioned or stale, it fails and tells you to run
-# dev-up. Credentials come from the invoking environment (envchain) and are
-# filtered through the hard-coded allowlist below -- that list lives here, in a
-# host-only file, so an agent inside the container cannot widen it.
+# dev-up. Credentials come from the invoking environment and are forwarded by
+# name via DEV_PI_FORWARD -- a list of variable names, never values, set in your
+# shell profile. pi ships no built-in allowlist: an unset DEV_PI_FORWARD is a
+# loud failure naming the variable, the syntax and the old list for pasting.
 #
 # Env knobs:
+#   DEV_PI_FORWARD=...    comma-separated variable names to forward (required;
+#                         set to "" to forward nothing on purpose)
 #   DEV_PI_ALLOW_SKEW=1   tolerate a host/container pi version mismatch
 set -euo pipefail
 
@@ -18,26 +21,20 @@ PI_AGENT_TARGET=/opt/pi/agent
 PI_SSH_TARGET=/ssh-agent
 
 # --- credential allowlist --------------------------------------------------
-# Union of the envchain namespaces: sdc gitlab azure jira artifactory
-# sonarqube bedrock. envchain decides what you are carrying this session; this
-# list decides what may ever cross the boundary. Only vars actually set are
-# passed, and values travel via podman's environment, never on the argv.
-FORWARD_ENV=(
-  # sdc -- at least one provider key is required or pi cannot reach a model
+# The list dev-pi used to forward by default, kept verbatim as the migration
+# reference: the startup gate prints it so existing users can paste it into
+# their shell profile. It is consulted nowhere else -- DEV_PI_FORWARD (the gate
+# below) is the only mechanism. Values travel via podman's environment, never
+# on the argv.
+ALLOWLIST_DEFAULT=(
   ANTHROPIC_API_KEY ANTHROPIC_BASE_URL OPENAI_API_KEY GOOGLE_GENERATIVE_AI_API_KEY
   LITELLM_MASTER_KEY CODE_SCAN_TOKEN
-  # gitlab
   GITLAB_HOST GITLAB_TOKEN GITLAB_NPM_TOKEN
-  # azure
   AZURE_DEVOPS_USER_EMAIL AZURE_DEVOPS_ORG_URL AZURE_DEVOPS_EXT_PAT
-  # jira / confluence
   JIRA_URL JIRA_USERNAME JIRA_PASSWORD
   CONFLUENCE_URL CONFLUENCE_USERNAME CONFLUENCE_PASSWORD
-  # artifactory
   ARTIFACTORY_READER_USERNAME ARTIFACTORY_READER_API_KEY
-  # sonarqube
   SONARQUBE_TOKEN
-  # bedrock
   AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
 )
 # SSH_AUTH_SOCK is deliberately absent: it is the one variable whose value must
@@ -46,6 +43,28 @@ FORWARD_ENV=(
 PROVIDER_KEYS=(ANTHROPIC_API_KEY OPENAI_API_KEY GOOGLE_GENERATIVE_AI_API_KEY)
 
 die() { echo "dev-pi: $*" >&2; exit 1; }
+
+# Comma-join arguments, for die messages.
+join() {
+  local IFS=,
+  printf '%s' "$*"
+}
+
+# --- DEV_PI_FORWARD gate ---------------------------------------------------
+# An unset DEV_PI_FORWARD is a loud failure: it names the variable, shows the
+# comma-separated syntax with a pasteable export line built from the constant
+# above, and prints the old list for pasting into your shell profile.
+if [ -z "${DEV_PI_FORWARD+x}" ]; then
+  printf -v mirrored '%s,' "${ALLOWLIST_DEFAULT[@]}"
+  mirrored=${mirrored%,}
+  die "DEV_PI_FORWARD is not set; pi no longer ships a built-in credential allowlist.
+    Your env must name what to forward. In your shell profile:
+
+        export DEV_PI_FORWARD=\"$mirrored\"
+
+    Set DEV_PI_FORWARD=\"\" to forward nothing on purpose (pi will then fail its
+    credential check if your session needs a provider key)."
+fi
 
 # Identical rule to dev-up, so both agree on folder identity.
 resolve_root() {
@@ -166,18 +185,52 @@ else
 fi
 
 # --- credentials -----------------------------------------------------------
+# DEV_PI_FORWARD (gated at startup) is the only forwarding mechanism. Set but
+# empty forwards nothing on purpose; with content, the names are split on
+# commas with whitespace trimmed, empty entries skipped and duplicates
+# deduped. Names reach the container, never values -- podman -e passes those
+# through from the environment.
+forward=()
+forward_csv=""
+if [ -n "$DEV_PI_FORWARD" ]; then
+  IFS=',' read -r -a raw_forward <<< "$DEV_PI_FORWARD"
+  for entry in "${raw_forward[@]}"; do
+    entry=${entry#"${entry%%[![:space:]]*}"}
+    entry=${entry%"${entry##*[![:space:]]}"}
+    [ -n "$entry" ] || continue
+    case ",$forward_csv," in *",$entry,"*) ;; *)
+      forward_csv="${forward_csv:+$forward_csv,}$entry"
+      forward+=("$entry")
+    ;; esac
+  done
+fi
+
 env_args=()
-for v in "${FORWARD_ENV[@]}"; do
+for v in "${forward[@]}"; do
   [ -n "${!v+x}" ] && env_args+=(-e "$v")
 done
 
-have_provider=0
+# A provider credential counts only when a provider key is BOTH set on the host
+# AND listed in DEV_PI_FORWARD -- host-present alone is not enough, because what
+# pi needs is the key itself inside the container.
+host_provider=()
+forwarded_provider=()
 for v in "${PROVIDER_KEYS[@]}"; do
-  [ -n "${!v:-}" ] && have_provider=1
+  [ -n "${!v:-}" ] && host_provider+=("$v")
+  case ",$forward_csv," in *",$v,"*) forwarded_provider+=("$v") ;; esac
 done
-[ "$have_provider" -eq 1 ] || die "no provider credential in environment.
+if [ "${#host_provider[@]}" -eq 0 ]; then
+  die "no provider credential set on the host (any of: $(join "${PROVIDER_KEYS[@]}")).
     pi runs inside the container now, so it needs the key itself.
-    Run: envchain sdc dev-pi ${*:-}"
+    Export a provider key in your environment and include it in DEV_PI_FORWARD."
+fi
+if [ "${#forwarded_provider[@]}" -eq 0 ]; then
+  die "provider keys are set on the host (${host_provider[*]}) but none of them
+    is in DEV_PI_FORWARD. pi runs inside the container now, so it needs the key
+    itself.
+    Add a provider key to DEV_PI_FORWARD (comma-separated names) in your shell
+    profile, with the key exported."
+fi
 
 # Set explicitly: config dir at the fixed mount, no startup network, and the
 # container-side path of the forwarded agent socket.
