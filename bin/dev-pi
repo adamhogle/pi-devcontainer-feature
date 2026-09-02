@@ -200,7 +200,8 @@ fi
 tty_args=(-i)
 [ -t 0 ] && [ -t 1 ] && tty_args=(-it)
 
-exec podman exec "${tty_args[@]}" \
+# Name the pane process pi: multiplexers label agent panes by the argv0 they read from /proc/<pid>/cmdline.
+exec -a pi podman exec "${tty_args[@]}" \
   -u "$C_USER" -w "$cwd" \
   "${env_args[@]}" \
   "$cid" pi "$@"
