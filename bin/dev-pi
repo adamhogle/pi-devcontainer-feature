@@ -149,8 +149,13 @@ fi
 [ -n "$c_pi_version" ] || die "container has no pi on PATH -- created without the pi feature.
     Run: dev-up"
 
-if command -v pi >/dev/null 2>&1; then
-  h_pi_version=$(pi --version 2>/dev/null | tr -d '[:space:]')
+# Explicit status test, mirroring the container-side capture above: a host pi
+# that exists but crashes must not kill the attach -- the container's own pi
+# is fine and is verified separately, so degrade to a skipped skew check.
+if ! h_pi_version=$(pi --version 2>&1); then
+  echo "dev-pi: warning: could not read the host pi version (${h_pi_version:-nothing printed}); skew check skipped" >&2
+else
+  h_pi_version=${h_pi_version//[[:space:]]/}
   if [ -n "$h_pi_version" ] && [ "$h_pi_version" != "$c_pi_version" ]; then
     if [ "${DEV_PI_ALLOW_SKEW:-0}" != "1" ]; then
       die "pi version skew: host $h_pi_version, container $c_pi_version.

@@ -83,9 +83,18 @@ if [ "$with_pi" -eq 1 ]; then
     echo "dev-up: install pi on the host, or pass --no-pi" >&2
     exit 1
   fi
-  pi_version=$(pi --version 2>/dev/null | tr -d '[:space:]')
+  # Capture raw (no pipe, stderr kept) so a crash is actionable: the exit
+  # status is tested explicitly instead of relying on set -e, which would kill
+  # the script here before the [ -z ] guard below could run.
+  pi_raw=$(pi --version 2>&1) || {
+    echo "dev-up: host pi is broken; --version failed with:" >&2
+    printf '%s\n' "$pi_raw" >&2
+    echo "dev-up: fix your pi on the host, or pass --no-pi" >&2
+    exit 1
+  }
+  pi_version=${pi_raw//[[:space:]]/}
   if [ -z "$pi_version" ]; then
-    echo "dev-up: could not read host pi version" >&2
+    echo "dev-up: could not read host pi version; got empty output" >&2
     exit 1
   fi
 
