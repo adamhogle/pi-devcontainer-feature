@@ -52,12 +52,29 @@ jobs:
 
   # The check GitLab could never run: no Docker-in-Docker on those shared runners.
   # GitHub-hosted runners have Docker, so install.sh is now actually executed.
+  #
+  # Two runs inside this one job, not a matrix: a matrix would rename the check
+  # runs to "smoke (0.84.2)" / "smoke (latest)", and branch protection requires the
+  # exact name "smoke" — a renamed check sits pending forever on every PR. The
+  # pinned run exercises the exact VERSION dev-up pins to the host's pi; the
+  # floating run catches upstream pi releases early.
   smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - run: |
+      - name: pinned pi
+        run: |
+          pinned=$({
+            cat src/pi/install.sh
+            echo 'if command -v node >/dev/null 2>&1; then echo "FAIL: node is on PATH" >&2; exit 1; fi'
+            echo 'for t in rg fd; do command -v "$t" >/dev/null 2>&1 || { echo "FAIL: $t missing from PATH" >&2; exit 1; }; done'
+            echo 'pi --version'
+          } | docker run --rm -i --user root -e _REMOTE_USER=root -e VERSION=0.84.2 debian:trixie-slim sh -s)
+          echo "$pinned"
+          [ "$(printf '%s' "$pinned" | tail -n 1 | tr -d '[:space:]')" = "0.84.2" ] || { echo "FAIL: pinned install did not produce exactly 0.84.2 (got: $pinned)" >&2; exit 1; }
+      - name: latest pi
+        run: |
           {
             cat src/pi/install.sh
             echo 'if command -v node >/dev/null 2>&1; then echo "FAIL: node is on PATH" >&2; exit 1; fi'
