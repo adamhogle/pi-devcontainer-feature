@@ -26,6 +26,8 @@ finding containers `dev-up` created, or verify a mount nobody makes.
 | --- | --- | --- |
 | `/opt/pi/agent` | feature `containerEnv`, `install.sh` | `dev-up` mount target, `dev-pi` verify |
 | `/ssh-agent` | `dev-up` mount target | `dev-pi` sets `SSH_AUTH_SOCK` to it |
+| `/opt/pi/herdr`, `/opt/pi/herdr.sock` | `dev-up` mount targets | `dev-pi` verify + `HERDR_SOCKET_PATH`, `share/herdr-shim` `PI_HERDR_REAL` default |
+| `/usr/local/bin/herdr` | `dev-up` mounts `share/herdr-shim` there | pi's mux detection (`hasCommand("herdr")`) |
 | `pi.box.folder=<root>` | `dev-up` `--id-label` | `dev-pi` container lookup, `dev-down` cleanup |
 | `resolve_root()` | shared by all three | `dev-pi` and `dev-down` — must be **byte-identical** |
 
@@ -142,6 +144,15 @@ what runs. Test a script change by using it: `dev-up` in a scratch workspace, th
   the syntax and the old list for pasting.
 * **`dev-up` owns creation-time state.** Bind mounts cannot be added to a running container,
   so anything requiring a mount belongs in `dev-up`, never `dev-pi`.
+* **`share/` is for files that run *inside* the container; `bin/` is for the host.**
+  `install.sh` symlinks every file in `bin/` onto the host `PATH`. `share/herdr-shim` is
+  named `herdr` once mounted, so putting it in `bin/` would shadow the user's real herdr on
+  the host. `dev-up` locates `share/` relative to its own resolved path (`readlink -f`), which
+  is what makes the symlink install still work.
+* **The herdr bridge is opt-in and must never block provisioning.** `dev-up` adds the three
+  mounts only when the binary, a live socket and the shim all exist; `dev-pi` forwards
+  `HERDR_*` only when its own shell is inside a herdr pane *and* the mounts are present.
+  Either half missing means headless, exactly as before -- never an error.
 
 ## Invariants
 
@@ -229,7 +240,8 @@ src/pi/install.sh                  install step (POSIX sh, runs as root at build
 bin/dev-up                         provision: feature + mounts + identity label
 bin/dev-pi                         strict attach: verify, then podman exec pi
 bin/dev-down                       remove containers for a workspace folder
-install.sh                         symlink bin/* into ~/.local/bin
+share/herdr-shim                   container-side herdr: rewrites `pane run` to re-enter the container
+install.sh                         symlink bin/* into ~/.local/bin (share/ is mounted, not symlinked)
 scripts/check-feature-metadata.mjs metadata gate
 scripts/check-version-bump.sh      version gate (pull requests, src/ only)
 scripts/check-contract.sh          cross-component contract gate

@@ -47,7 +47,7 @@ jobs:
             apt-get update -qq
             apt-get install -y -qq --no-install-recommends shellcheck
             shellcheck --shell=sh src/pi/install.sh
-            shellcheck --shell=bash bin/dev-up bin/dev-pi bin/dev-down install.sh scripts/*.sh
+            shellcheck --shell=bash bin/dev-up bin/dev-pi bin/dev-down install.sh scripts/*.sh share/herdr-shim
           '
 
   # The check GitLab could never run: no Docker-in-Docker on those shared runners.
