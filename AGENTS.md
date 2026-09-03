@@ -108,6 +108,11 @@ The same smoke test, locally, via podman:
 It passes when pi prints a version **and** `node` is absent from `PATH`. Use a base image
 without node (`debian:trixie-slim`) — that is the case the private-runtime design exists for.
 
+On the pull request the smoke job runs that pipe twice now — once with `-e VERSION=0.84.2`,
+asserting the exact version (the same pin `dev-up` uses) and once without `VERSION` (floating,
+catches upstream releases) — and the check-run name stays `smoke`, so branch protection keeps
+matching.
+
 Run the checks CI runs (the `shellcheck` job installs shellcheck on `debian:trixie-slim`;
 locally, use the same recipe or `sudo apt-get install -y shellcheck`):
 
