@@ -131,8 +131,10 @@ what runs. Test a script change by using it: `dev-up` in a scratch workspace, th
 * **Credentials never reach argv.** `podman exec -e NAME` (no `=`) passes the value through
   from the environment; `NAME=value` would expose it in `ps aux`. This is also why `dev-pi`
   uses `podman exec` rather than `devcontainer exec`, whose `--remote-env` takes `name=value`.
-* **The allowlist lives in `bin/dev-pi`.** It is a list of variable *names*, never values, and
-  it must stay in a host file the container cannot write to.
+* **The allowlist is user-configured.** `DEV_PI_FORWARD` names the variables to forward, as a
+  list of *names*, never values. It ships no default, so one maintainer's credential set never
+  bakes into the tool, and an unset variable is a loud failure at startup naming the variable,
+  the syntax and the old list for pasting.
 * **`dev-up` owns creation-time state.** Bind mounts cannot be added to a running container,
   so anything requiring a mount belongs in `dev-up`, never `dev-pi`.
 
