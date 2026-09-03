@@ -185,6 +185,27 @@ downloaded tools, which costs a re-download per volume for no benefit on a match
 A corollary: baking `rg` and `fd` into the image still matters even though the host copies
 usually win. They are the correct-arch fallback, they cover machines whose
 `~/.pi/agent/bin` is empty, and they are what non-pi shells in the container resolve.
+
+### Known limitation: compose workspaces
+
+For a `dockerComposeFile` project, the devcontainer CLI computes the id labels once and lands
+them — `--id-label`, `--mount` and `--additional-features` alike — on the **primary service**
+only. Sidecars carry the compose labels but no `pi.box.folder` and no `devcontainer.metadata`.
+`dev-down` therefore expands to the whole project off `com.docker.compose.project`, removes the
+project network after the containers, and leaves named volumes alone (teardown preserves data).
+
+The workspace bind mount is **the compose file's job**. The CLI mounts the workspace for
+single-container projects only, `dev-up` cannot add a mount to the compose invocation, and
+re-running it never converges — so a compose project without a volume entry fails in `dev-pi`
+naming the `docker-compose.yml` fix. With `- ..:/workspaces/<name>` in the compose file, compose
+mode fully works — podman-compose resolves volume paths against the compose file's directory,
+so with the conventional `.devcontainer/` layout `..` is the workspace root and `.` mounts
+`.devcontainer` itself.
+
+If the labelled (primary) container is already gone, `dev-down` still legitimately reports
+nothing — the project label is read off the container the identity labels found. The recovery
+is `dev-up` (recreates and relabels the project) then `dev-down`.
+
 * **No credentials, ever.** The feature handles none. `dev-pi` injects them per session with
   `podman exec -e`. `check-feature-metadata.mjs` rejects credential-shaped `containerEnv` keys.
 * **`PI_CODING_AGENT_DIR` is `/opt/pi/agent`**, a fixed user-independent path. `dev-up`

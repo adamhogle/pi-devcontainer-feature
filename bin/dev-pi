@@ -144,12 +144,29 @@ out = {
     "C_AGENT_SRC": by_dest.get("/opt/pi/agent", ""),
     "C_SSH_SRC": by_dest.get("/ssh-agent", ""),
     "C_WORKSPACE": by_src.get(sys.argv[1] if len(sys.argv) > 1 else "", ""),
+    "C_COMPOSE": labels.get("com.docker.compose.project", ""),
 }
 for k, v in out.items():
     print(f"{k}={shlex.quote(v)}")
 ' "$root")"
 
-[ -n "$C_WORKSPACE" ] || die "container has no bind mount for $root. Run: dev-up"
+if [ -z "$C_WORKSPACE" ] && [ -z "$C_COMPOSE" ]; then
+  die "container has no bind mount for $root. Run: dev-up"
+fi
+if [ -z "$C_WORKSPACE" ]; then
+  die "compose project '$C_COMPOSE' has no bind mount for the workspace.
+    The devcontainer CLI mounts the workspace for single-container projects, but for
+    compose projects the compose file must provide it. Add a volume entry to your
+    docker-compose.yml, e.g.:
+
+        volumes:
+          - ..:/workspaces/cm
+
+    (the path is relative to the compose file's directory; with the conventional
+    .devcontainer/ layout, '..' is the workspace root)
+
+    Then run: dev-up"
+fi
 
 if [ "$C_AGENT_SRC" != "$PI_AGENT_DIR" ]; then
   die "container's $PI_AGENT_TARGET is '${C_AGENT_SRC:-<not mounted>}', expected '$PI_AGENT_DIR'.

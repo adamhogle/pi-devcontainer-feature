@@ -37,5 +37,24 @@ if [ "${#ids[@]}" -eq 0 ]; then
   exit 0
 fi
 
-echo "dev-down: removing ${#ids[@]} container(s) for $folder"
+# Compose projects: the labelled container is the primary service -- the
+# sidecars carry the compose project label but no pi.box.folder, so removing
+# only the labelled one would orphan them and the network. The project label is
+# read off the container the identity labels FOUND: if the labelled (primary)
+# container is already gone, nothing expands and dev-down still legitimately
+# reports nothing -- the recovery is dev-up (recreates and relabels the
+# project) then dev-down.
+project=$(podman inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "${ids[0]}" 2>/dev/null || true)
+if [ -n "$project" ]; then
+  mapfile -t ids < <(podman ps -aq --filter "label=com.docker.compose.project=$project" | sort -u)
+fi
+
+echo "dev-down: removing ${#ids[@]} container(s) for $folder${project:+ (compose project $project)}"
+# Named volumes are deliberately left alone: podman rm has no volume flag here,
+# and compose semantics would need --volumes to remove them -- teardown wants
+# to preserve data.
 podman rm -f "${ids[@]}"
+if [ -n "$project" ]; then
+  mapfile -t nets < <(podman network ls --filter "label=com.docker.compose.project=$project" --format '{{.Name}}' | sort -u)
+  [ ${#nets[@]} -eq 0 ] || podman network rm -f "${nets[@]}"
+fi
