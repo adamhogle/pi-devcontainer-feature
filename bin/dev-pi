@@ -227,9 +227,11 @@ for v in "${forward[@]}"; do
   [ -n "${!v+x}" ] && env_args+=(-e "$v")
 done
 
-# A provider credential counts only when a provider key is BOTH set on the host
-# AND listed in DEV_PI_FORWARD -- host-present alone is not enough, because what
-# pi needs is the key itself inside the container.
+# A provider key that is both set on the host and listed in DEV_PI_FORWARD is
+# simply noticed; anything else gets a note, not a refusal. pi may authenticate
+# with no env key at all -- stored auth or a provider configured in models.json
+# rides the /opt/pi/agent mount -- and pi shows its own auth error at startup,
+# in front of the user, so guessing here would only produce false positives.
 host_provider=()
 forwarded_provider=()
 for v in "${PROVIDER_KEYS[@]}"; do
@@ -237,16 +239,12 @@ for v in "${PROVIDER_KEYS[@]}"; do
   case ",$forward_csv," in *",$v,"*) forwarded_provider+=("$v") ;; esac
 done
 if [ "${#host_provider[@]}" -eq 0 ]; then
-  die "no provider credential set on the host (any of: $(join "${PROVIDER_KEYS[@]}")).
-    pi runs inside the container now, so it needs the key itself.
-    Export a provider key in your environment and include it in DEV_PI_FORWARD."
-fi
-if [ "${#forwarded_provider[@]}" -eq 0 ]; then
-  die "provider keys are set on the host (${host_provider[*]}) but none of them
-    is in DEV_PI_FORWARD. pi runs inside the container now, so it needs the key
-    itself.
-    Add a provider key to DEV_PI_FORWARD (comma-separated names) in your shell
-    profile, with the key exported."
+  echo "dev-pi: warning: no known provider credential on the host (any of: $(join "${PROVIDER_KEYS[@]}")).
+    pi usually carries its own auth in the mounted config. If it cannot
+    authenticate on its own, export a key and add it to DEV_PI_FORWARD." >&2
+elif [ "${#forwarded_provider[@]}" -eq 0 ]; then
+  echo "dev-pi: warning: provider keys are set on the host (${host_provider[*]}) but none of them
+    is in DEV_PI_FORWARD, so none is forwarded into the container." >&2
 fi
 
 # Set explicitly: config dir at the fixed mount, no startup network, and the

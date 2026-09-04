@@ -43,11 +43,14 @@ dev-down                        # remove the container
 
 `DEV_PI_FORWARD` is now required: `dev-pi` no longer ships a built-in credential
 allowlist. Set it in your shell profile to a comma-separated list of variable
-*names* — never values — and the provider keys (`ANTHROPIC_API_KEY`,
-`OPENAI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`) must be among them and
-exported on the host. Running `dev-pi` with the variable unset prints the old
+*names* — never values. Running `dev-pi` with the variable unset prints the old
 23-name list, ready for pasting, if you want it as a starting point;
-`DEV_PI_FORWARD=""` forwards nothing on purpose. `envchain` is unchanged — it
+`DEV_PI_FORWARD=""` forwards nothing on purpose. The provider keys
+(`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`) are
+noticed, not required: pi can authenticate with no env key at all — stored auth
+or a provider configured in `models.json` rides the `~/.pi/agent` mount into
+the container — so a missing or unforwarded provider key earns a warning, and
+whatever pi needs, its own startup tells you. `envchain` is unchanged — it
 puts the *values* in the host env, and `DEV_PI_FORWARD` filters them by name.
 
 `dev-up` pulls without credentials. It honours a `GHCR_TOKEN` (with
