@@ -48,6 +48,25 @@ expect_in() {
 expect_in /ssh-agent bin/dev-up bin/dev-pi
 expect_in pi.box.folder bin/dev-up bin/dev-pi bin/dev-down
 
+# --- herdr bridge: the three sides must name the same paths -----------------
+# dev-up mounts the binary and socket; dev-pi verifies both and points
+# HERDR_SOCKET_PATH at the socket; the shim defaults PI_HERDR_REAL to the binary.
+# The shim's mount target must be a `herdr` on PATH, or pi's hasCommand("herdr")
+# fails and the bridge is silently headless despite every mount being present.
+expect_in /opt/pi/herdr.sock bin/dev-up bin/dev-pi
+expect_in /opt/pi/herdr bin/dev-up bin/dev-pi share/herdr-shim
+expect_in /usr/local/bin/herdr bin/dev-up
+[ -x share/herdr-shim ] || err "share/herdr-shim is not executable; the mount would be a herdr that cannot run"
+
+# Every PI_BOX_* / PI_HERDR_* variable the shim reads must be one dev-pi sets.
+# A rename on one side would leave the shim reading an empty value and, for
+# PI_BOX_CONTAINER_ID, degrading to a pass-through that fails visibly on the host.
+# shellcheck disable=SC2016  # matching the literal ${VAR text in the shim, not expanding it
+shim_vars=$(grep -oE '\$\{(PI_BOX_[A-Z_]+|PI_HERDR_[A-Z_]+)' share/herdr-shim | tr -d '${' | sort -u)
+for var in $shim_vars; do
+  grep -qE -- "-e \"?$var=" bin/dev-pi || err "share/herdr-shim reads $var but bin/dev-pi never forwards it"
+done
+
 # --- the agent dir must resolve to the same path everywhere -----------------
 # Compare resolved values, not literals: install.sh composes its paths from
 # $PREFIX, so grepping for /opt/pi/agent there would fail on a correct file.

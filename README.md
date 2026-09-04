@@ -22,6 +22,29 @@ The point of this feature is that **nothing pi-related ever enters a repo's
 - **No credentials.** The feature handles none. `dev-pi` injects them per session with
   `podman exec -e`, so they are fresh each time and never baked into the container.
 
+## Subagent panes under herdr
+
+pi's interactive-subagent extension renders each subagent in a multiplexer pane. With pi
+inside the container and [herdr](https://herdr.dev) on the host, the container sees no
+multiplexer and the extension silently degrades to headless: subagents still run and return
+results, but no pane ever appears.
+
+If `dev-up` finds herdr installed **and running** it bridges the two. Three bind mounts at
+provisioning time -- herdr's API socket at `/opt/pi/herdr.sock`, the binary at
+`/opt/pi/herdr` (statically linked, so the host copy runs on any base image) and
+`share/herdr-shim` at `/usr/local/bin/herdr` -- plus the `HERDR_*` environment forwarded per
+session by `dev-pi`. Subagents then split real panes in your herdr workspace, show up as
+`pi` in the sidebar with live status, and close when done.
+
+The shim exists because a subagent pane's shell is on the **host**, while pi composes its
+launch command out of **container** paths. `herdr pane run` is rewritten to re-enter the
+container with `podman exec`; everything else passes straight through to the real binary.
+
+The bridge is opt-in on herdr being present: no herdr, or herdr not running, means no mounts
+and headless as before. It never stops a container coming up. Note that forwarding the
+socket gives the container full control of your herdr session -- fine for a personal machine,
+worth knowing before it goes into a shared image.
+
 ## Install the host scripts
 
 ```sh

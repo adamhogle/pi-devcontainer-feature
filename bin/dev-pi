@@ -19,6 +19,8 @@ set -euo pipefail
 PI_AGENT_DIR=${DEV_PI_AGENT_DIR:-$HOME/.pi/agent}
 PI_AGENT_TARGET=/opt/pi/agent
 PI_SSH_TARGET=/ssh-agent
+PI_HERDR_TARGET=/opt/pi/herdr
+PI_HERDR_SOCK_TARGET=/opt/pi/herdr.sock
 
 # --- credential allowlist --------------------------------------------------
 # The list dev-pi used to forward by default, kept verbatim as the migration
@@ -145,6 +147,8 @@ out = {
     "C_SSH_SRC": by_dest.get("/ssh-agent", ""),
     "C_WORKSPACE": by_src.get(sys.argv[1] if len(sys.argv) > 1 else "", ""),
     "C_COMPOSE": labels.get("com.docker.compose.project", ""),
+    "C_HERDR_SRC": by_dest.get("/opt/pi/herdr", ""),
+    "C_HERDR_SOCK_SRC": by_dest.get("/opt/pi/herdr.sock", ""),
 }
 for k, v in out.items():
     print(f"{k}={shlex.quote(v)}")
@@ -256,6 +260,30 @@ env_args+=(-e "PI_CODING_AGENT_DIR=$PI_AGENT_TARGET" -e "PI_OFFLINE=1")
 for v in TERM COLORTERM LANG; do
   [ -n "${!v:-}" ] && env_args+=(-e "$v")
 done
+
+# --- herdr bridge ----------------------------------------------------------
+# dev-up mounted the socket, the binary and the shim; supply the session half.
+# pi's mux detection requires HERDR_ENV=1, HERDR_PANE_ID and a herdr on PATH --
+# all three, or it falls back to headless and no subagent pane appears.
+#
+# Gated on this shell actually being inside a herdr pane AND the mounts existing.
+# Attaching from a plain terminal leaves the bridge dormant rather than pointing
+# the container at a pane that is not there.
+if [ "${HERDR_ENV:-}" = 1 ] && [ -n "${HERDR_PANE_ID:-}" ] \
+   && [ -n "$C_HERDR_SRC" ] && [ -n "$C_HERDR_SOCK_SRC" ]; then
+  env_args+=(-e "HERDR_ENV=1" -e "HERDR_SOCKET_PATH=$PI_HERDR_SOCK_TARGET")
+  env_args+=(-e "PI_HERDR_REAL=$PI_HERDR_TARGET")
+  for v in HERDR_PANE_ID HERDR_WORKSPACE_ID HERDR_TAB_ID; do
+    [ -n "${!v:-}" ] && env_args+=(-e "$v")
+  done
+
+  # What the shim needs to build the re-entry exec. The container cannot learn
+  # its own id reliably (hostname is overridable via runArgs), and the path
+  # mapping exists only out here.
+  env_args+=(-e "PI_BOX_CONTAINER_ID=$cid" -e "PI_BOX_USER=$C_USER")
+  env_args+=(-e "PI_BOX_WORKSPACE=$C_WORKSPACE" -e "PI_BOX_HOST_FOLDER=$root")
+  env_args+=(-e "PI_BOX_FORWARD=$forward_csv")
+fi
 
 # --- land in the mirrored subdirectory -------------------------------------
 rel=$(realpath --relative-to="$root" "$PWD")

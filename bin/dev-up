@@ -16,6 +16,9 @@ PI_FEATURE=${DEV_PI_FEATURE:-ghcr.io/adamhogle/pi-devcontainer-feature/pi:1}
 PI_AGENT_DIR=${DEV_PI_AGENT_DIR:-$HOME/.pi/agent}
 PI_AGENT_TARGET=/opt/pi/agent
 PI_SSH_TARGET=/ssh-agent
+PI_HERDR_TARGET=/opt/pi/herdr
+PI_HERDR_SOCK_TARGET=/opt/pi/herdr.sock
+PI_HERDR_SHIM_TARGET=/usr/local/bin/herdr
 
 rebuild=0
 with_pi=1
@@ -112,6 +115,35 @@ if [ "$with_pi" -eq 1 ]; then
     args+=(--mount "type=bind,source=$SSH_AUTH_SOCK,target=$PI_SSH_TARGET")
   else
     echo "dev-up: warning: no usable SSH_AUTH_SOCK on the host; git over ssh will not work in the container" >&2
+  fi
+
+  # --- herdr bridge ---------------------------------------------------------
+  # pi's subagent extension renders each subagent in a multiplexer pane. herdr
+  # runs on the host, so without this the container detects no multiplexer and
+  # the extension silently degrades to headless: subagents still run and return
+  # results, but no pane ever appears.
+  #
+  # Three mounts make it reachable: its API socket (the control channel), the
+  # binary itself (statically linked, so the host copy runs on any base image),
+  # and the shim that rewrites `pane run` to re-enter this container. dev-pi
+  # forwards the matching HERDR_* variables per session.
+  #
+  # Entirely opt-in on herdr being present. No herdr, no mounts, headless as
+  # before -- this must never be what stops a container coming up.
+  herdr_bin=${HERDR_BIN_PATH:-$(command -v herdr 2>/dev/null || true)}
+  herdr_sock=${HERDR_SOCKET_PATH:-$HOME/.config/herdr/herdr.sock}
+  shim=$(cd "$(dirname "$(readlink -f "$0")")/../share" && pwd)/herdr-shim
+
+  # The devcontainer CLI's --mount grammar is type/source/target only -- no
+  # readonly. Bind-mounting the files as-is is fine: they are the host's own
+  # binary and script, and the container user already owns the host uid.
+  if [ -n "$herdr_bin" ] && [ -x "$herdr_bin" ] && [ -S "$herdr_sock" ] && [ -x "$shim" ]; then
+    args+=(--mount "type=bind,source=$herdr_bin,target=$PI_HERDR_TARGET")
+    args+=(--mount "type=bind,source=$herdr_sock,target=$PI_HERDR_SOCK_TARGET")
+    args+=(--mount "type=bind,source=$shim,target=$PI_HERDR_SHIM_TARGET")
+    echo "dev-up: herdr bridge enabled ($herdr_bin)"
+  elif [ -n "$herdr_bin" ] && [ ! -S "$herdr_sock" ]; then
+    echo "dev-up: note: herdr installed but not running ($herdr_sock is not a socket); subagents will be headless" >&2
   fi
 
   # pi itself, as an image layer. Version is pinned to the host's pi so the

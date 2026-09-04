@@ -1,0 +1,174 @@
+#!/usr/bin/env bash
+# herdr shim -- the container half of the herdr bridge.
+#
+# Mounted by dev-up at /usr/local/bin/herdr, ahead of the real (host) binary
+# mounted read-only at /opt/pi/herdr. Everything pi's subagent extension runs
+# inside the container goes through here.
+#
+# Why this exists
+# ---------------
+# herdr runs on the HOST; pi runs in the CONTAINER. Forwarding the API socket is
+# enough for control -- with $HERDR_SOCKET_PATH, HERDR_ENV and HERDR_PANE_ID the
+# real binary drives the host session fine from in here, so almost every
+# subcommand is a straight pass-through.
+#
+# One thing does not survive the boundary. `herdr pane run <pane> <cmd>` types
+# <cmd> into a pane whose shell is on the HOST, but pi composes that command out
+# of CONTAINER paths:
+#
+#     cd /workspaces/foo && PI_CODING_AGENT_DIR=/opt/pi/agent pi --session ...
+#
+# On the host that cd fails and `pi` is the wrong pi -- the subagent dies at the
+# prompt. So `pane run` is rewritten to re-enter this container:
+#
+#     podman exec -it -u <user> -w <cwd> <cid> bash -lc '<cmd>'
+#
+# The podman call executes in the host pane's shell, not here, so this container
+# needs no podman client -- only the identity dev-pi passes in.
+#
+# `--cwd` arguments are translated for the same reason: pane split and tab create
+# take a host-side path, and pi passes its own container-side cwd.
+#
+# Inputs (all from dev-pi, see bin/dev-pi):
+#   PI_HERDR_REAL        real herdr binary                 (default /opt/pi/herdr)
+#   PI_BOX_CONTAINER_ID  container to re-enter             (required to rewrite)
+#   PI_BOX_USER          user for the re-entry exec
+#   PI_BOX_WORKSPACE     container-side workspace root
+#   PI_BOX_HOST_FOLDER   host-side workspace root
+#   PI_BOX_FORWARD       credential names to re-forward, comma separated
+set -euo pipefail
+
+REAL=${PI_HERDR_REAL:-/opt/pi/herdr}
+
+[ -x "$REAL" ] || {
+  echo "herdr-shim: real herdr not found at $REAL" >&2
+  echo "herdr-shim: the bridge mount is missing; run dev-up" >&2
+  exit 127
+}
+
+# Without an identity there is nothing to re-enter, so stay a pass-through.
+# Rewriting with a blank id would emit a broken podman call into the pane; a
+# plain pass-through instead leaves a visible host-side failure, which is the
+# honest symptom of a half-configured bridge.
+if [ -z "${PI_BOX_CONTAINER_ID:-}" ]; then
+  exec "$REAL" "$@"
+fi
+
+# Map a container path onto its host equivalent. Only the workspace root is
+# translatable: /opt/pi/agent is the host's ~/.pi/agent under a different name,
+# but nothing in the pane-creating path passes an agent path as --cwd, and
+# guessing at one would be worse than leaving it alone.
+to_host_path() {
+  local path=$1
+  if [ -n "${PI_BOX_WORKSPACE:-}" ] && [ -n "${PI_BOX_HOST_FOLDER:-}" ]; then
+    case "$path" in
+      "$PI_BOX_WORKSPACE") printf '%s' "$PI_BOX_HOST_FOLDER"; return ;;
+      "$PI_BOX_WORKSPACE"/*) printf '%s%s' "$PI_BOX_HOST_FOLDER" "${path#"$PI_BOX_WORKSPACE"}"; return ;;
+    esac
+  fi
+  printf '%s' "$path"
+}
+
+# Rewrite any --cwd value in place; every other argument passes through.
+# Result lands in the global `translated`.
+translated=()
+translate_cwd_args() {
+  translated=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --cwd)
+        if [ $# -ge 2 ]; then
+          translated+=(--cwd "$(to_host_path "$2")")
+          shift 2
+          continue
+        fi
+        ;;
+      --cwd=*)
+        translated+=("--cwd=$(to_host_path "${1#--cwd=}")")
+        shift
+        continue
+        ;;
+    esac
+    translated+=("$1")
+    shift
+  done
+}
+
+# Single-quote for the host shell: close, escape, reopen around each quote.
+shell_escape() {
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
+case "${1:-}${2:+ $2}" in
+  "pane run")
+    shift 2
+    [ $# -ge 2 ] || exec "$REAL" pane run "$@"
+
+    pane_id=$1
+    shift
+    command=$*
+
+    # -e NAME (no '=') passes the value through from the pane's environment
+    # rather than argv, so credentials never land in ps aux -- the same rule
+    # dev-pi follows. The pane inherits them from the shell that started herdr.
+    env_args=""
+    if [ -n "${PI_BOX_FORWARD:-}" ]; then
+      IFS=',' read -r -a forward_names <<< "$PI_BOX_FORWARD"
+      for name in "${forward_names[@]}"; do
+        name=${name#"${name%%[![:space:]]*}"}
+        name=${name%"${name##*[![:space:]]}"}
+        [ -n "$name" ] || continue
+        env_args+=" -e $(shell_escape "$name")"
+      done
+    fi
+
+    # Fixed container-side settings, mirroring dev-pi's own exec.
+    env_args+=" -e PI_CODING_AGENT_DIR=/opt/pi/agent -e PI_OFFLINE=1"
+    [ -n "${SSH_AUTH_SOCK:-}" ] && env_args+=" -e SSH_AUTH_SOCK=$(shell_escape "$SSH_AUTH_SOCK")"
+    for v in TERM COLORTERM LANG; do
+      [ -n "${!v:-}" ] && env_args+=" -e $v=$(shell_escape "${!v}")"
+    done
+
+    # Re-forward the bridge itself so a subagent can spawn its own subagents:
+    # the pi that lands in the new pane needs the same socket, identity and
+    # pane context this one had. HERDR_PANE_ID becomes the new pane -- that is
+    # what makes its splits descend from itself rather than from us.
+    for v in HERDR_ENV HERDR_SOCKET_PATH HERDR_WORKSPACE_ID HERDR_TAB_ID \
+             PI_HERDR_REAL PI_BOX_CONTAINER_ID PI_BOX_USER PI_BOX_WORKSPACE \
+             PI_BOX_HOST_FOLDER PI_BOX_FORWARD; do
+      [ -n "${!v:-}" ] && env_args+=" -e $v=$(shell_escape "${!v}")"
+    done
+    env_args+=" -e HERDR_PANE_ID=$(shell_escape "$pane_id")"
+
+    # pi cd's to its own target inside the command anyway; this is just the
+    # exec's starting point, so the container cwd is the sane default.
+    workdir=$PWD
+    [ -d "$workdir" ] || workdir=${PI_BOX_WORKSPACE:-/}
+
+    # bash -lc, not sh -c: pi's command is bash (it uses $'...' and process
+    # substitution in places), and a login shell picks up the container's
+    # profile the way an interactive dev-pi session would.
+    #
+    # Wrapped in a subshell with `exec -a pi`, for the same reason dev-pi's own
+    # attach does it: herdr identifies a pane's agent from the argv0 it reads out
+    # of /proc/<pid>/cmdline, and an unwrapped call presents as `podman`. The
+    # pane would run the subagent correctly but show up unrecognised, with no
+    # agent name, status or lifecycle in the sidebar.
+    #
+    # The subshell is what keeps the pane's own bash alive underneath, so the
+    # pane survives the subagent exiting -- the __SUBAGENT_DONE_<rc>__ marker
+    # still lands on screen for the extension to match, and closing the pane
+    # stays the extension's decision.
+    rewritten="( exec -a pi podman exec -it -u $(shell_escape "${PI_BOX_USER:-root}")"
+    rewritten+=" -w $(shell_escape "$workdir")"
+    rewritten+="$env_args"
+    rewritten+=" $(shell_escape "$PI_BOX_CONTAINER_ID")"
+    rewritten+=" bash -lc $(shell_escape "$command") )"
+
+    exec "$REAL" pane run "$pane_id" "$rewritten"
+    ;;
+  *)
+    translate_cwd_args "$@"
+    exec "$REAL" "${translated[@]}"
+    ;;
+esac
