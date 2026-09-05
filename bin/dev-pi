@@ -183,11 +183,23 @@ if [ -n "${SSH_AUTH_SOCK:-}" ] && [ "$C_SSH_SRC" != "$SSH_AUTH_SOCK" ]; then
 fi
 
 # --- verify pi, and that it matches the host -------------------------------
-if ! c_pi_version=$(podman exec -u "$C_USER" "$cid" sh -lc 'command -v pi >/dev/null && pi --version' 2>/dev/null | tr -d '[:space:]'); then
-  c_pi_version=""
-fi
-[ -n "$c_pi_version" ] || die "container has no pi on PATH -- created without the pi feature.
+# Two distinct failures, two distinct messages. A pi that is absent means the
+# container was provisioned without the feature; a pi that is present but
+# crashes means the feature is broken for this pi release (it happened at
+# 0.85.0, when cli.js started importing the server module the bundle inlines). Collapsing them into one "no pi" message
+# sends the user to re-run dev-up, which rebuilds the same broken thing.
+if ! podman exec -u "$C_USER" "$cid" sh -lc 'command -v pi >/dev/null' 2>/dev/null; then
+  die "container has no pi on PATH -- created without the pi feature.
     Run: dev-up"
+fi
+if ! c_pi_out=$(podman exec -u "$C_USER" "$cid" sh -lc 'pi --version' 2>&1); then
+  die "container's pi is installed but fails to start:
+$(printf '%s\n' "$c_pi_out" | sed 's/^/    /' | head -n 6)
+    This is a feature bug for this pi release, not a dev-up problem.
+    Update pi-devcontainer-feature and re-run dev-up; if that does not help, report it."
+fi
+c_pi_version=$(printf '%s' "$c_pi_out" | tr -d '[:space:]')
+[ -n "$c_pi_version" ] || die "container's pi --version printed nothing; cannot verify the install."
 
 # Explicit status test, mirroring the container-side capture above: a host pi
 # that exists but crashes must not kill the attach -- the container's own pi

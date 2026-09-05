@@ -1,6 +1,6 @@
 {
   "id": "pi",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "name": "pi coding agent",
   "description": "Installs the pi coding agent with a private Node runtime that is kept off PATH, so it cannot shadow the workspace toolchain, plus ripgrep and fd on PATH so pi never downloads them at runtime.",
   "options": {
