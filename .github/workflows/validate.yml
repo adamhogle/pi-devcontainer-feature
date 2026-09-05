@@ -54,10 +54,14 @@ jobs:
   # GitHub-hosted runners have Docker, so install.sh is now actually executed.
   #
   # Two runs inside this one job, not a matrix: a matrix would rename the check
-  # runs to "smoke (0.84.2)" / "smoke (latest)", and branch protection requires the
+  # runs to "smoke (0.85.0)" / "smoke (latest)", and branch protection requires the
   # exact name "smoke" — a renamed check sits pending forever on every PR. The
   # pinned run exercises the exact VERSION dev-up pins to the host's pi; the
   # floating run catches upstream pi releases early.
+  #
+  # Keep the pin on a release with the dist/bundle/cli.js layout (0.84.3+). The
+  # old dist/cli.js kept working until 0.85.0, when it broke under the bare
+  # @earendil-works/pi-server import; see the install.sh comment for the chain.
   smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -70,9 +74,9 @@ jobs:
             echo 'if command -v node >/dev/null 2>&1; then echo "FAIL: node is on PATH" >&2; exit 1; fi'
             echo 'for t in rg fd; do command -v "$t" >/dev/null 2>&1 || { echo "FAIL: $t missing from PATH" >&2; exit 1; }; done'
             echo 'pi --version'
-          } | docker run --rm -i --user root -e _REMOTE_USER=root -e VERSION=0.84.2 debian:trixie-slim sh -s)
+          } | docker run --rm -i --user root -e _REMOTE_USER=root -e VERSION=0.85.0 debian:trixie-slim sh -s)
           echo "$pinned"
-          [ "$(printf '%s' "$pinned" | tail -n 1 | tr -d '[:space:]')" = "0.84.2" ] || { echo "FAIL: pinned install did not produce exactly 0.84.2 (got: $pinned)" >&2; exit 1; }
+          [ "$(printf '%s' "$pinned" | tail -n 1 | tr -d '[:space:]')" = "0.85.0" ] || { echo "FAIL: pinned install did not produce exactly 0.85.0 (got: $pinned)" >&2; exit 1; }
       - name: latest pi
         run: |
           {

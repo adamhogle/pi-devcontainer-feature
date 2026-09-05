@@ -43,8 +43,24 @@ PATH="${PREFIX}/node/bin:${PATH}" \
     --no-fund --no-audit \
     "@earendil-works/pi-coding-agent@${PI_VERSION}"
 
-CLI="${PREFIX}/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js"
-[ -f "${CLI}" ] || { echo "pi-feature: expected CLI not found at ${CLI}" >&2; exit 1; }
+# Resolve the entry point from the package's own bin field rather than
+# hardcoding a path. The path moved in 0.84.3 (dist/cli.js ->
+# dist/bundle/cli.js); the old file kept working until 0.85.0, when cli.js
+# started statically importing experimental/server.js, whose bare
+# @earendil-works/pi-server import cannot resolve: that package is inlined
+# into the bundle and npm never installs it. bin.pi is the same thing npm's
+# own symlink follows; if it moves again, so do we. A missing or empty bin.pi
+# is a broken package, not something to paper over -- fail loudly.
+PKG_DIR="${PREFIX}/lib/node_modules/@earendil-works/pi-coding-agent"
+CLI_REL=$("${PREFIX}/node/bin/node" -p "require('${PKG_DIR}/package.json').bin.pi") || {
+  echo "pi-feature: cannot read bin.pi from ${PKG_DIR}/package.json (node -p failed with: ${CLI_REL:-nothing printed})" >&2
+  exit 1
+}
+case "${CLI_REL}" in
+  ''|undefined|null) echo "pi-feature: package.json has no bin.pi entry" >&2; exit 1 ;;
+esac
+CLI="${PKG_DIR}/${CLI_REL}"
+[ -f "${CLI}" ] || { echo "pi-feature: bin.pi points at ${CLI_REL} but it does not exist" >&2; exit 1; }
 
 cat > /usr/local/bin/pi <<EOF
 #!/bin/sh
