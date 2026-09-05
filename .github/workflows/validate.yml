@@ -4,6 +4,12 @@ on:
   pull_request:
   push:
     branches: [main]
+  schedule:
+    # Weekly, Monday 06:00 UTC: the floating "latest" pi smoke run is the only
+    # thing that catches an upstream pi release breaking install.sh between
+    # pushes, and pushes can go days without happening (0.85.0 landed on the
+    # registry hours after the last push and nothing noticed).
+    - cron: "0 6 * * 1"
 
 permissions:
   contents: read
