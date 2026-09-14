@@ -58,6 +58,21 @@ expect_in /opt/pi/herdr bin/dev-up bin/dev-pi share/herdr-shim
 expect_in /usr/local/bin/herdr bin/dev-up
 [ -x share/herdr-shim ] || err "share/herdr-shim is not executable; the mount would be a herdr that cannot run"
 
+# --- audio bridge: mount target, env var and library must line up ------------
+# dev-up mounts the host's PulseAudio socket, dev-pi points PULSE_SERVER at the
+# same path, and install.sh both creates the target file and installs the library
+# that reads it. Any one of them missing is silent: the recorder finds no
+# microphone and records nothing, with no error on any side.
+expect_in /opt/pi/pulse-native bin/dev-up bin/dev-pi
+# shellcheck disable=SC2016  # matching the literal $PI_PULSE_TARGET, not expanding it
+grep -q 'PULSE_SERVER=unix:\$PI_PULSE_TARGET' bin/dev-pi || err \
+  "bin/dev-pi does not point PULSE_SERVER at \$PI_PULSE_TARGET; the mounted socket would go unused"
+grep -q 'libpulse0' src/pi/install.sh || err \
+  "src/pi/install.sh does not install libpulse0; pvrecorder dlopens libpulse.so.0 and finds no microphone without it"
+# shellcheck disable=SC2016  # matching the literal ${PREFIX}, not expanding it
+grep -q 'touch "\${PREFIX}/pulse-native"' src/pi/install.sh || err \
+  "src/pi/install.sh never creates \${PREFIX}/pulse-native, so the bind mount target would become a directory"
+
 # Every PI_BOX_* / PI_HERDR_* variable the shim reads must be one dev-pi sets.
 # A rename on one side would leave the shim reading an empty value and, for
 # PI_BOX_CONTAINER_ID, degrading to a pass-through that fails visibly on the host.

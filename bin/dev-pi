@@ -21,6 +21,7 @@ PI_AGENT_TARGET=/opt/pi/agent
 PI_SSH_TARGET=/ssh-agent
 PI_HERDR_TARGET=/opt/pi/herdr
 PI_HERDR_SOCK_TARGET=/opt/pi/herdr.sock
+PI_PULSE_TARGET=/opt/pi/pulse-native
 
 # --- credential allowlist --------------------------------------------------
 # The list dev-pi used to forward by default, kept verbatim as the migration
@@ -149,6 +150,7 @@ out = {
     "C_COMPOSE": labels.get("com.docker.compose.project", ""),
     "C_HERDR_SRC": by_dest.get("/opt/pi/herdr", ""),
     "C_HERDR_SOCK_SRC": by_dest.get("/opt/pi/herdr.sock", ""),
+    "C_PULSE_SRC": by_dest.get("/opt/pi/pulse-native", ""),
 }
 for k, v in out.items():
     print(f"{k}={shlex.quote(v)}")
@@ -267,6 +269,12 @@ fi
 # container-side path of the forwarded agent socket.
 env_args+=(-e "PI_CODING_AGENT_DIR=$PI_AGENT_TARGET" -e "PI_OFFLINE=1")
 [ -n "$C_SSH_SRC" ] && env_args+=(-e "SSH_AUTH_SOCK=$PI_SSH_TARGET")
+
+# Audio bridge: dev-up mounted the host's PulseAudio socket, so point libpulse at
+# it. Gated on the mount existing -- setting PULSE_SERVER to a path that is not
+# there would make libpulse fail to connect instead of falling through to its own
+# (equally silent, but unsurprising) default.
+[ -n "$C_PULSE_SRC" ] && env_args+=(-e "PULSE_SERVER=unix:$PI_PULSE_TARGET")
 for v in TERM COLORTERM LANG; do
   [ -n "${!v:-}" ] && env_args+=(-e "$v")
 done

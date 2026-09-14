@@ -45,6 +45,27 @@ and headless as before. It never stops a container coming up. Note that forwardi
 socket gives the container full control of your herdr session -- fine for a personal machine,
 worth knowing before it goes into a shared image.
 
+## Dictation
+
+pi's dictation extension records through pvrecorder, which needs two things a container has
+by default neither of: a sound library and a way to reach the host's audio. Missing either,
+it enumerates a single `NULL Capture Device` and records silence -- no error, nothing in a
+log, just an empty transcript.
+
+Both halves are handled. `libpulse0` is baked into the image by the feature, and if `dev-up`
+finds a live PulseAudio socket on the host it bind-mounts it at `/opt/pi/pulse-native`, with
+`dev-pi` pointing `PULSE_SERVER` there per session. Microphones then enumerate inside the
+container exactly as they do on the host.
+
+The socket is forwarded rather than `/dev/snd` passed through: PipeWire owns the devices on
+a modern host, so giving the container raw ALSA access would contend with it. This also
+works unchanged on a PulseAudio host, since PipeWire serves the same socket protocol. Set
+`PULSE_SOCKET_PATH` if yours is somewhere other than `$XDG_RUNTIME_DIR/pulse/native`.
+
+Like the herdr bridge, it is opt-in on the socket existing: a host without PulseAudio or
+PipeWire provisions exactly as before, minus dictation. Note that the container user shares
+the host uid, which is what makes the socket's own permissions sufficient.
+
 ## Install the host scripts
 
 ```sh
@@ -132,7 +153,7 @@ locally, via podman:
 
 ```sh
 { cat src/pi/install.sh; echo 'pi --version'; } \
-  | podman run --rm -i --user root -e VERSION=0.84.2 -e _REMOTE_USER=root \
+  | podman run --rm -i --user root -e VERSION=0.85.0 -e _REMOTE_USER=root \
       debian:trixie-slim sh -s
 ```
 
