@@ -20,11 +20,13 @@ case "$(uname -m)" in
   *) echo "pi-feature: unsupported architecture: $(uname -m)" >&2; exit 1 ;;
 esac
 
+apt_updated=0
+
 if command -v apt-get >/dev/null 2>&1; then
   if ! command -v curl >/dev/null 2>&1 || ! command -v xz >/dev/null 2>&1; then
     apt-get update -y
     apt-get install -y --no-install-recommends ca-certificates curl xz-utils
-    rm -rf /var/lib/apt/lists/*
+    apt_updated=1
   fi
 fi
 
@@ -47,7 +49,9 @@ fi
 # extension degrades to no microphone, which must never fail the whole install.
 if command -v apt-get >/dev/null 2>&1; then
   echo "pi-feature: installing libpulse0 (microphone support for dictation)"
-  apt-get update -y
+  if [ "${apt_updated}" -eq 0 ]; then
+    apt-get update -y
+  fi
   apt-get install -y --no-install-recommends libpulse0
   rm -rf /var/lib/apt/lists/*
 else
