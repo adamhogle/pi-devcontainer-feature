@@ -105,14 +105,14 @@ The same smoke test, locally, via podman:
 ```sh
 { cat src/pi/install.sh; echo 'command -v node || echo "node off PATH: correct"'; echo 'pi --version'; } \
   | podman run --rm -i --user root --network=pasta:--ipv4-only \
-      -e VERSION=0.84.2 -e _REMOTE_USER=root \
+      -e VERSION=0.85.0 -e _REMOTE_USER=root \
       debian:trixie-slim sh -s
 ```
 
 It passes when pi prints a version **and** `node` is absent from `PATH`. Use a base image
 without node (`debian:trixie-slim`) — that is the case the private-runtime design exists for.
 
-On the pull request the smoke job runs that pipe twice now — once with `-e VERSION=0.84.2`,
+On the pull request the smoke job runs that pipe twice now — once with `-e VERSION=0.85.0`,
 asserting the exact version (the same pin `dev-up` uses) and once without `VERSION` (floating,
 catches upstream releases) — and the check-run name stays `smoke`, so branch protection keeps
 matching.

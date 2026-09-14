@@ -153,7 +153,7 @@ locally, via podman:
 
 ```sh
 { cat src/pi/install.sh; echo 'pi --version'; } \
-  | podman run --rm -i --user root -e VERSION=0.84.2 -e _REMOTE_USER=root \
+  | podman run --rm -i --user root -e VERSION=0.85.0 -e _REMOTE_USER=root \
       debian:trixie-slim sh -s
 ```
 
