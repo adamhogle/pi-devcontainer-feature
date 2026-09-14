@@ -97,7 +97,8 @@ base branch. It cannot enforce that you picked the *right* increment — that is
 
 GitHub-hosted runners have Docker, so CI executes `install.sh` on every pull request: the
 `smoke` job in `.github/workflows/validate.yml` pipes it into `debian:trixie-slim`, where it
-installs pi and asserts `pi --version`, `node` off `PATH`, and `rg`/`fd` on `PATH`.
+installs pi and asserts `pi --version`, `node` off `PATH`, `rg`/`fd` on `PATH`, libpulse
+present, and `/opt/pi/pulse-native` existing.
 
 The same smoke test, locally, via podman:
 

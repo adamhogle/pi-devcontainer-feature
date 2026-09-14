@@ -77,6 +77,8 @@ jobs:
         run: |
           pinned=$({
             cat src/pi/install.sh
+            echo 'ldconfig -p 2>/dev/null | grep -q libpulse.so || { echo "FAIL: libpulse missing; pvrecorder finds no microphone" >&2; exit 1; }'
+            echo 'test -f /opt/pi/pulse-native || { echo "FAIL: /opt/pi/pulse-native missing; the socket mount target is not a file" >&2; exit 1; }'
             echo 'if command -v node >/dev/null 2>&1; then echo "FAIL: node is on PATH" >&2; exit 1; fi'
             echo 'for t in rg fd; do command -v "$t" >/dev/null 2>&1 || { echo "FAIL: $t missing from PATH" >&2; exit 1; }; done'
             echo 'pi --version'
@@ -87,6 +89,8 @@ jobs:
         run: |
           {
             cat src/pi/install.sh
+            echo 'ldconfig -p 2>/dev/null | grep -q libpulse.so || { echo "FAIL: libpulse missing; pvrecorder finds no microphone" >&2; exit 1; }'
+            echo 'test -f /opt/pi/pulse-native || { echo "FAIL: /opt/pi/pulse-native missing; the socket mount target is not a file" >&2; exit 1; }'
             echo 'if command -v node >/dev/null 2>&1; then echo "FAIL: node is on PATH" >&2; exit 1; fi'
             echo 'for t in rg fd; do command -v "$t" >/dev/null 2>&1 || { echo "FAIL: $t missing from PATH" >&2; exit 1; }; done'
             echo 'pi --version'
