@@ -28,6 +28,32 @@ if command -v apt-get >/dev/null 2>&1; then
   fi
 fi
 
+# libpulse, for pi's dictation extension.
+#
+# pi-transcribe records through pvrecorder, whose bundled miniaudio dlopens
+# libpulse.so.0 at runtime rather than linking it. Without the library present
+# the PulseAudio backend is simply skipped and the recorder reports a single
+# "NULL Capture Device": no error, no mics, silent recordings. That silence is
+# the whole reason this is baked in rather than left to each consumer image.
+#
+# ALSA is deliberately not installed alongside it. PipeWire owns the devices on
+# a modern host and dev-up forwards its PulseAudio socket, so the Pulse backend
+# is the one that gets used; miniaudio tries it first and never reaches the ALSA
+# fallback. Skipping it also avoids the libasound2 -> libasound2t64 rename in
+# Debian trixie, which would need per-release package-name handling for a
+# backend that would go unused.
+#
+# apt-only, like the curl/xz bootstrap above: on a non-apt base the dictation
+# extension degrades to no microphone, which must never fail the whole install.
+if command -v apt-get >/dev/null 2>&1; then
+  echo "pi-feature: installing libpulse0 (microphone support for dictation)"
+  apt-get update -y
+  apt-get install -y --no-install-recommends libpulse0
+  rm -rf /var/lib/apt/lists/*
+else
+  echo "pi-feature: no apt-get; skipping libpulse0. Dictation will find no microphone." >&2
+fi
+
 echo "pi-feature: installing private node ${NODE_VERSION} (${NODE_ARCH})"
 mkdir -p "${PREFIX}/node"
 curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" \
@@ -102,6 +128,14 @@ install_release_binary fd \
 mkdir -p "${PREFIX}/agent"
 if [ -n "${_REMOTE_USER:-}" ] && [ "${_REMOTE_USER}" != "root" ]; then
   chown "${_REMOTE_USER}" "${PREFIX}/agent" || true
+fi
+
+# Mount point for the host's PulseAudio socket, bound in by dev-up. A bind mount
+# onto a missing target makes podman create a *directory* there, which libpulse
+# then rejects as a socket -- so the file has to exist first.
+touch "${PREFIX}/pulse-native"
+if [ -n "${_REMOTE_USER:-}" ] && [ "${_REMOTE_USER}" != "root" ]; then
+  chown "${_REMOTE_USER}" "${PREFIX}/pulse-native" || true
 fi
 
 echo "pi-feature: installed pi $(/usr/local/bin/pi --version)," \

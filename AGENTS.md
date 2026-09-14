@@ -27,6 +27,7 @@ finding containers `dev-up` created, or verify a mount nobody makes.
 | `/opt/pi/agent` | feature `containerEnv`, `install.sh` | `dev-up` mount target, `dev-pi` verify |
 | `/ssh-agent` | `dev-up` mount target | `dev-pi` sets `SSH_AUTH_SOCK` to it |
 | `/opt/pi/herdr`, `/opt/pi/herdr.sock` | `dev-up` mount targets | `dev-pi` verify + `HERDR_SOCKET_PATH`, `share/herdr-shim` `PI_HERDR_REAL` default |
+| `/opt/pi/pulse-native` | `dev-up` mount target, `install.sh` creates the file | `dev-pi` sets `PULSE_SERVER` to it |
 | `/usr/local/bin/herdr` | `dev-up` mounts `share/herdr-shim` there | pi's mux detection (`hasCommand("herdr")`) |
 | `pi.box.folder=<root>` | `dev-up` `--id-label` | `dev-pi` container lookup, `dev-down` cleanup |
 | `resolve_root()` | shared by all three | `dev-pi` and `dev-down` — must be **byte-identical** |
@@ -153,6 +154,15 @@ what runs. Test a script change by using it: `dev-up` in a scratch workspace, th
   mounts only when the binary, a live socket and the shim all exist; `dev-pi` forwards
   `HERDR_*` only when its own shell is inside a herdr pane *and* the mounts are present.
   Either half missing means headless, exactly as before -- never an error.
+* **The audio bridge is opt-in the same way.** `dev-up` mounts the host's PulseAudio socket
+  only when it is a live socket; `dev-pi` sets `PULSE_SERVER` only when that mount is
+  present. A host with no PulseAudio or PipeWire provisions exactly as before, minus
+  dictation. The socket is forwarded rather than `/dev/snd` passed through: PipeWire owns
+  the devices on a modern host, so raw ALSA access would contend with it.
+* **Both halves of audio are required, and neither fails loudly.** The library
+  (`libpulse0`, in the image) and the socket (mounted by `dev-up`, named by `dev-pi`) are
+  useless alone. Missing either, pvrecorder reports one `NULL Capture Device` and records
+  silence -- no error on any side. `check-contract.sh` is what keeps the three in step.
 
 ## Invariants
 

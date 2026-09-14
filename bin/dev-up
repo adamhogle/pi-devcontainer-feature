@@ -20,6 +20,7 @@ PI_SSH_TARGET=/ssh-agent
 PI_HERDR_TARGET=/opt/pi/herdr
 PI_HERDR_SOCK_TARGET=/opt/pi/herdr.sock
 PI_HERDR_SHIM_TARGET=/usr/local/bin/herdr
+PI_PULSE_TARGET=/opt/pi/pulse-native
 
 rebuild=0
 with_pi=1
@@ -178,6 +179,27 @@ if [ "$with_pi" -eq 1 ]; then
     echo "dev-up: herdr bridge enabled ($herdr_bin)"
   elif [ -n "$herdr_bin" ] && [ ! -S "$herdr_sock" ]; then
     echo "dev-up: note: herdr installed but not running ($herdr_sock is not a socket); subagents will be headless" >&2
+  fi
+
+  # --- audio bridge ----------------------------------------------------------
+  # pi's dictation extension records through pvrecorder. A container has no sound
+  # devices, so without this it enumerates one "NULL Capture Device" and records
+  # silence -- no error anywhere, which is exactly how it wastes an afternoon.
+  #
+  # The host's PulseAudio socket is forwarded rather than /dev/snd passed through:
+  # PipeWire owns the devices on a modern host, so handing raw ALSA access to the
+  # container would contend with it, and a socket matches how the ssh-agent and
+  # herdr bridges already work. The container user shares the host uid, so the
+  # socket's own permissions are all the access control needed.
+  #
+  # Opt-in on the socket existing, like herdr: a host without PulseAudio or
+  # PipeWire provisions exactly as before, minus dictation.
+  pulse_sock=${PULSE_SOCKET_PATH:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/pulse/native}
+  if [ -S "$pulse_sock" ]; then
+    args+=(--mount "type=bind,source=$pulse_sock,target=$PI_PULSE_TARGET")
+    echo "dev-up: audio bridge enabled ($pulse_sock)"
+  else
+    echo "dev-up: note: no PulseAudio socket at $pulse_sock; dictation will find no microphone" >&2
   fi
 
   # pi itself, as an image layer. Version is pinned to the host's pi so the
