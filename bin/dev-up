@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # (Re)start the dev container for a workspace folder (default: current dir).
 #
-# Usage: dev-up [--rebuild] [--no-pi] [folder]
+# Usage: dev-up [--rebuild] [--no-pi] [--config devcontainer.json] [folder]
 #   --rebuild   rebuild the image from scratch (--build-no-cache)
 #   --no-pi     plain dev container: no pi feature, no pi mounts, no pi label
+#   --config    use this devcontainer.json instead of the one found in the tree
 #
 # Provisioning for pi is applied here and nowhere else: the repo's
 # devcontainer.json must never mention pi. This script owns every coupling
@@ -23,6 +24,7 @@ PI_HERDR_SHIM_TARGET=/usr/local/bin/herdr
 rebuild=0
 with_pi=1
 target=.
+config_path=
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -32,8 +34,17 @@ while [ $# -gt 0 ]; do
     --no-pi)
       with_pi=0
       ;;
+    --config)
+      shift
+      [ $# -gt 0 ] || { echo "dev-up: --config requires a path" >&2; exit 2; }
+      config_path=$1
+      ;;
+    --config=*)
+      config_path=${1#--config=}
+      [ -n "$config_path" ] || { echo "dev-up: --config requires a path" >&2; exit 2; }
+      ;;
     -h|--help)
-      sed -n '2,6p' "$0" | cut -c3-
+      sed -n '2,7p' "$0" | cut -c3-
       exit 0
       ;;
     -*)
@@ -73,6 +84,29 @@ args=(
   --remove-existing-container
   --docker-path podman
 )
+
+# Override which devcontainer.json the CLI uses, while keeping the folder
+# identity above (resolve_root -> pi.box.folder) as the workspace root. The
+# config file's own relative paths still resolve relative to its directory;
+# only the file used changes, never which folder is mounted and labelled.
+if [ -n "$config_path" ]; then
+  if [ ! -e "$config_path" ]; then
+    echo "dev-up: --config file not found: $config_path" >&2
+    exit 1
+  fi
+  # Normalise to absolute so a relative arg is unambiguous regardless of dev-up's
+  # own cwd; the CLI would otherwise resolve a relative --config against its cwd.
+  config_path=$(readlink -f "$config_path")
+  # The devcontainer CLI only accepts a config whose basename is devcontainer.json
+  # or .devcontainer.json; anything else dies inside the CLI with a stack trace.
+  # A directory path fails the same way, so require exactly those file names.
+  base=$(basename "$config_path")
+  if [ "$base" != "devcontainer.json" ] && [ "$base" != ".devcontainer.json" ]; then
+    echo "dev-up: --config must be a devcontainer.json or .devcontainer.json file: $config_path" >&2
+    exit 1
+  fi
+  args+=(--config "$config_path")
+fi
 
 if [ "$with_pi" -eq 1 ]; then
   if [ ! -d "$PI_AGENT_DIR" ]; then
