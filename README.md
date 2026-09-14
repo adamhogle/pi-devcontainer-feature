@@ -60,9 +60,18 @@ Usage:
 
 ```sh
 dev-up                          # provision (anonymous pull; the package is public)
+dev-up --config ./configs/devcontainer.json  # use a devcontainer.json from a custom path
+dev-up --no-pi                  # plain dev container: no pi feature, no pi mounts
+dev-pi                          # attach pi to the running container
 envchain sdc,gitlab DEV_PI_FORWARD=ANTHROPIC_API_KEY dev-pi
 dev-down                        # remove the container
 ```
+
+`dev-up --config <path>` points at a `devcontainer.json` elsewhere on disk while the
+workspace root — the folder that gets mounted and tagged `pi.box.folder` — is still
+resolved from the folder argument (or the current directory) exactly as before. The
+file must be named `devcontainer.json` or `.devcontainer.json`; the devcontainer CLI
+rejects any other basename.
 
 `DEV_PI_FORWARD` is now required: `dev-pi` no longer ships a built-in credential
 allowlist. Set it in your shell profile to a comma-separated list of variable
