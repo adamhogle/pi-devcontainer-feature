@@ -60,7 +60,7 @@ Usage:
 
 ```sh
 dev-up                          # provision (anonymous pull; the package is public)
-dev-up --config ./configs/dev.json  # use a devcontainer.json from a custom path
+dev-up --config ./configs/devcontainer.json  # use a devcontainer.json from a custom path
 dev-up --no-pi                  # plain dev container: no pi feature, no pi mounts
 dev-pi                          # attach pi to the running container
 envchain sdc,gitlab DEV_PI_FORWARD=ANTHROPIC_API_KEY dev-pi
