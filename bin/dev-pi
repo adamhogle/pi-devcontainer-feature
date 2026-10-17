@@ -268,6 +268,12 @@ fi
 # Set explicitly: config dir at the fixed mount, no startup network, and the
 # container-side path of the forwarded agent socket.
 env_args+=(-e "PI_CODING_AGENT_DIR=$PI_AGENT_TARGET" -e "PI_OFFLINE=1")
+
+# Launch-context marker (see bin/dev-envchain): forward the envchain scopes
+# this launch is gated with, so container-side pi can report the same
+# wrapper in its herdr resume command. Names only -- the values themselves
+# come from envchain directly and never touch this script.
+[ -n "${ENVCHAIN_NAMESPACE:-}" ] && env_args+=(-e "ENVCHAIN_NAMESPACE=$ENVCHAIN_NAMESPACE")
 [ -n "$C_SSH_SRC" ] && env_args+=(-e "SSH_AUTH_SOCK=$PI_SSH_TARGET")
 
 # Audio bridge: dev-up mounted the host's PulseAudio socket, so point libpulse at
