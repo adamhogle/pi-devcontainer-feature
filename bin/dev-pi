@@ -300,6 +300,10 @@ if [ "${HERDR_ENV:-}" = 1 ] && [ -n "${HERDR_PANE_ID:-}" ] \
   env_args+=(-e "PI_BOX_CONTAINER_ID=$cid" -e "PI_BOX_USER=$C_USER")
   env_args+=(-e "PI_BOX_WORKSPACE=$C_WORKSPACE" -e "PI_BOX_HOST_FOLDER=$root")
   env_args+=(-e "PI_BOX_FORWARD=$forward_csv")
+  # Host spelling of the agent-dir mount, for the extension's session-path
+  # reporting: herdr's web UI reads the store out here, pi sees it in there as
+  # /opt/pi/agent. (share/herdr-shim re-forwards it to subagent panes.)
+  env_args+=(-e "PI_BOX_HOST_AGENT_DIR=$PI_AGENT_DIR")
 fi
 
 # --- land in the mirrored subdirectory -------------------------------------

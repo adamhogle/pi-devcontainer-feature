@@ -101,7 +101,7 @@ namespace, so no hand-minted credential is needed. `workflow_dispatch` gives the
 operator a manual re-publish for the bootstrap run and for recovery.
 
 That publishes `ghcr.io/adamhogle/pi-devcontainer-feature/pi`, tagged with the
-exact version plus every enclosing prefix — `1.1.0`, `1.1`, `1` and `latest`.
+exact version plus every enclosing prefix — `2.0.0`, `2.0`, `2` and `latest`.
 `dev-up` pins the floating major `pi:2`, so a publish moves `:2` to the new digest.
 
 Bump `version` in `devcontainer-feature.json` on every change under `src/`:
@@ -109,7 +109,7 @@ publishing an already-published version is a no-op, so an un-bumped change never
 reaches consumers. CI enforces this on pull requests. See
 [AGENTS.md](AGENTS.md#versioning).
 
-> Stay on `1.x`. A `0.x` version would publish a floating `:0` tag, and under semver-0 a
+> Stay on `2.x`. A `0.x` version would publish a floating `:0` tag, and under semver-0 a
 > `0.1 → 0.2` bump is allowed to be breaking — so `:0` would move across breaking changes
 > and the pin would be worthless.
 
