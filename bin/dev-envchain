@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Run a command under envchain, recording the scopes for herdr resume.
+#
+# Usage: dev-envchain NAMESPACE[,NAMESPACE...] CMD [ARG...]
+#
+# envchain execs CMD in place, so the scopes live only in its argv and are
+# gone the moment CMD starts -- nothing downstream can recover them. This
+# wrapper exports the scopes as ENVCHAIN_NAMESPACE first, so pi's herdr
+# integration can report a resume command (`dev-envchain <scopes> ...`)
+# that re-declares them after a herdr server restart. Scopes are names,
+# never values; the secrets still travel only via envchain itself.
+set -euo pipefail
+
+die() { echo "dev-envchain: $*" >&2; exit 1; }
+
+[ $# -ge 2 ] || die "usage: dev-envchain NAMESPACE[,NAMESPACE...] CMD [ARG...]"
+[ -n "$1" ] || die "namespace must not be empty"
+
+ns=$1
+shift
+export ENVCHAIN_NAMESPACE=$ns
+exec envchain "$ns" "$@"

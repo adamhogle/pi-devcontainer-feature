@@ -135,7 +135,7 @@ case "${1:-}${2:+ $2}" in
     # what makes its splits descend from itself rather than from us.
     for v in HERDR_ENV HERDR_SOCKET_PATH HERDR_WORKSPACE_ID HERDR_TAB_ID \
              PI_HERDR_REAL PI_BOX_CONTAINER_ID PI_BOX_USER PI_BOX_WORKSPACE \
-             PI_BOX_HOST_FOLDER PI_BOX_FORWARD; do
+             PI_BOX_HOST_FOLDER PI_BOX_FORWARD ENVCHAIN_NAMESPACE; do
       [ -n "${!v:-}" ] && env_args+=" -e $v=$(shell_escape "${!v}")"
     done
     env_args+=" -e HERDR_PANE_ID=$(shell_escape "$pane_id")"
