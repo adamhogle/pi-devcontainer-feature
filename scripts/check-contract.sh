@@ -61,8 +61,15 @@ expect_in /usr/local/bin/herdr bin/dev-up
 # Every PI_BOX_* / PI_HERDR_* variable the shim reads must be one dev-pi sets.
 # A rename on one side would leave the shim reading an empty value and, for
 # PI_BOX_CONTAINER_ID, degrading to a pass-through that fails visibly on the host.
+# The pane-run re-forward list names its variables indirectly (${!v}), which the
+# ${VAR scan below cannot see, so that for-list is parsed literally too.
 # shellcheck disable=SC2016  # matching the literal ${VAR text in the shim, not expanding it
-shim_vars=$(grep -oE '\$\{(PI_BOX_[A-Z_]+|PI_HERDR_[A-Z_]+)' share/herdr-shim | tr -d '${' | sort -u)
+shim_vars=$(
+  {
+    grep -oE '\$\{(PI_BOX_[A-Z_]+|PI_HERDR_[A-Z_]+)' share/herdr-shim
+    awk '/for v in /{capture=1} capture{print} /; do$/{capture=0}' share/herdr-shim
+  } | grep -oE '(PI_BOX_[A-Z_]+|PI_HERDR_[A-Z_]+)' | sort -u
+)
 for var in $shim_vars; do
   grep -qE -- "-e \"?$var=" bin/dev-pi || err "share/herdr-shim reads $var but bin/dev-pi never forwards it"
 done
