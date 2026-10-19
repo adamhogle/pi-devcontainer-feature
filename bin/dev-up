@@ -139,6 +139,17 @@ if [ "$with_pi" -eq 1 ]; then
   # so it never collides with a container VS Code started for the same folder.
   args+=(--id-label "pi.box.folder=$folder")
 
+  # But --id-label also *replaces* the devcontainer CLI's default identity
+  # labels, so the container we create will not carry devcontainer.local_folder.
+  # If VS Code (or a plain `devcontainer up`) already started one for this
+  # folder, dev-up creates a second, separate container. Warn so the user is not
+  # surprised by two containers for one workspace.
+  if [ -n "$(podman ps -q --filter "label=devcontainer.local_folder=$folder" 2>/dev/null)" ]; then
+    echo "dev-up: warning: a running container for $folder already exists" >&2
+    echo "dev-up: dev-up will create a separate pi-provisioned container" >&2
+    echo "dev-up: (--id-label replaces the CLI's devcontainer.local_folder label)" >&2
+  fi
+
   # The whole agent config dir, read/write, at a fixed user-independent path.
   # Fixed path means we do not need to know remoteUser before the container exists.
   args+=(--mount "type=bind,source=$PI_AGENT_DIR,target=$PI_AGENT_TARGET")
