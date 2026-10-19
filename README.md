@@ -45,6 +45,36 @@ and headless as before. It never stops a container coming up. Note that forwardi
 socket gives the container full control of your herdr session -- fine for a personal machine,
 worth knowing before it goes into a shared image.
 
+## Ports
+
+`forwardPorts` in a workspace `devcontainer.json` is honored by the attaching client —
+VS Code — not by the devcontainer CLI or podman: the [spec](https://containers.dev/implementors/json_reference/#forward-ports)
+assigns forwarding to "the devcontainer.json supporting service / tool", and `devcontainer
+up` builds the container's run args itself with no publish option. Left alone, the declared
+ports are unreachable from the host.
+
+`dev-up` therefore reads the resolved configuration (same `--config` override and variable
+substitution as `up`) and publishes each plain-number port itself — TCP only — bound to
+`127.0.0.1` on the host, keeping the ports off the LAN. Entries that are not plain numbers
+(`"db:5432"`, ranges, `/udp`) cannot be published this way and earn a warning; ports the
+config already publishes itself — via `runArgs` or the legacy `appPort` property — are left
+alone; compose workspaces are skipped, since services there are started by the compose CLI
+— declare their ports in the compose file; and with `--network=host` in `runArgs` nothing
+is published, because the container already shares the host's network.
+
+One case stops provisioning: a port already bound on the host by something else — another
+dev container, a dev server — fails podman's bind and `up` exits non-zero. The directive
+itself asked for that bind, so it fails loudly instead of dropping it silently; the bind
+error names the port. The same applies to ports below 1024 on a rootless podman host whose
+`net.ipv4.ip_unprivileged_port_start` still excludes them. Free the port, lower the sysctl,
+or remove the port from `forwardPorts`. Publishing also needs host `node`, which the
+devcontainer CLI needs anyway; without it `dev-up` warns and the ports stay unreachable.
+
+Published ports deliver traffic to the container's interface, not its loopback: a service
+that binds `127.0.0.1` **inside** the container still refuses connections after publishing.
+Listening on `0.0.0.0` is the launcher's job, in the consumer repo — `dev-up` cannot absorb
+it.
+
 ## Install the host scripts
 
 ```sh

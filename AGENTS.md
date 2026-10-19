@@ -11,7 +11,7 @@ Everything needed to run pi *inside* a dev container instead of on the host:
 
 It exists so that **nothing pi-related ever has to appear in a consumer repo's
 `devcontainer.json`**. `dev-up` applies the feature at provisioning time via
-`--additional-features`, pinned to the floating major tag `pi:1`, and owns every other
+`--additional-features`, pinned to the floating major tag `pi:2`, and owns every other
 coupling to the host (the `~/.pi/agent` mount, the ssh-agent socket, the `pi.box.folder`
 label). `dev-pi` then attaches with `podman exec`, injecting credentials per session.
 Never suggest adding pi, this feature, or a `~/.pi` mount to a consumer project's config.
@@ -144,6 +144,13 @@ what runs. Test a script change by using it: `dev-up` in a scratch workspace, th
   the syntax and the old list for pasting.
 * **`dev-up` owns creation-time state.** Bind mounts cannot be added to a running container,
   so anything requiring a mount belongs in `dev-up`, never `dev-pi`.
+* **`dev-up` owns `forwardPorts`.** The devcontainer CLI drops the property (forwarding is
+  the attaching client's job), so `dev-up` reads the resolved config and publishes
+  plain-number ports on the host at `127.0.0.1` by handing the CLI a pass-through podman
+  wrapper on `--docker-path`. Numbers only; a port the config already publishes itself
+  (via `runArgs` or legacy `appPort`) wins; compose workspaces and host-networking
+  `runArgs` are skipped. The one exception to never-block-provisioning: a host port already
+  bound elsewhere fails `up` loudly, because the directive itself asked for that bind.
 * **`share/` is for files that run *inside* the container; `bin/` is for the host.**
   `install.sh` symlinks every file in `bin/` onto the host `PATH`. `share/herdr-shim` is
   named `herdr` once mounted, so putting it in `bin/` would shadow the user's real herdr on
@@ -237,7 +244,7 @@ is `dev-up` (recreates and relabels the project) then `dev-down`.
 ```text
 src/pi/devcontainer-feature.json   feature metadata, options, containerEnv
 src/pi/install.sh                  install step (POSIX sh, runs as root at build time)
-bin/dev-up                         provision: feature + mounts + identity label
+bin/dev-up                         provision: feature + mounts + identity label + published forwardPorts
 bin/dev-pi                         strict attach: verify, then podman exec pi
 bin/dev-down                       remove containers for a workspace folder
 share/herdr-shim                   container-side herdr: rewrites `pane run` to re-enter the container

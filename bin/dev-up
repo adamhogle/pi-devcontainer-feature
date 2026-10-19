@@ -6,6 +6,10 @@
 #   --no-pi     plain dev container: no pi feature, no pi mounts, no pi label
 #   --config    use this devcontainer.json instead of the one found in the tree
 #
+# forwardPorts in the workspace devcontainer.json are published on the host,
+# bound to 127.0.0.1. The devcontainer CLI itself ignores them (forwarding is
+# the attaching client's job per the spec); see the forwardPorts section below.
+#
 # Provisioning for pi is applied here and nowhere else: the repo's
 # devcontainer.json must never mention pi. This script owns every coupling
 # between the container and this host (pi itself, ~/.pi/agent, the ssh-agent
@@ -82,7 +86,6 @@ args=(
   up
   --workspace-folder "$folder"
   --remove-existing-container
-  --docker-path podman
 )
 
 # Override which devcontainer.json the CLI uses, while keeping the folder
@@ -107,6 +110,16 @@ if [ -n "$config_path" ]; then
   fi
   args+=(--config "$config_path")
 fi
+
+# Temp dirs created along the way (credential store, podman wrapper), removed
+# on exit. One trap per signal: a same-signal `trap` would replace the
+# previous one, but EXIT and INT/TERM are separate. INT/TERM must also exit --
+# otherwise the script keeps running with its temp dirs already deleted.
+# Single-quoted so the expansions happen when the trap fires, not now.
+tmpdirs=()
+trap 'if [ "${#tmpdirs[@]}" -gt 0 ]; then rm -rf "${tmpdirs[@]}"; fi' EXIT
+trap 'if [ "${#tmpdirs[@]}" -gt 0 ]; then rm -rf "${tmpdirs[@]}"; fi; exit 130' INT
+trap 'if [ "${#tmpdirs[@]}" -gt 0 ]; then rm -rf "${tmpdirs[@]}"; fi; exit 143' TERM
 
 if [ "$with_pi" -eq 1 ]; then
   if [ ! -d "$PI_AGENT_DIR" ]; then
@@ -189,7 +202,7 @@ if [ "$with_pi" -eq 1 ]; then
   registry=${PI_FEATURE%%/*}
   if [ -n "${GHCR_TOKEN:-}" ]; then
     docker_config=$(mktemp -d)
-    trap 'rm -rf "$docker_config"' EXIT INT TERM
+    tmpdirs+=("$docker_config")
     umask 077
     printf '{"auths":{"%s":{"auth":"%s"}}}\n' "$registry" \
       "$(printf '%s:%s' "${DEV_PI_REGISTRY_USER:-$USER}" "$GHCR_TOKEN" | base64 -w0)" \
@@ -198,6 +211,165 @@ if [ "$with_pi" -eq 1 ]; then
   elif [ ! -f "${DOCKER_CONFIG:-$HOME/.docker}/config.json" ]; then
     echo "dev-up: note: $PI_FEATURE is public; no GHCR_TOKEN needed to pull it" >&2
     echo "dev-up: if it is not public, set GHCR_TOKEN and DEV_PI_REGISTRY_USER to your GitHub login" >&2
+  fi
+fi
+
+# --- forwardPorts -> published ports ----------------------------------------
+# forwardPorts is honored by the attaching client (VS Code), not by the
+# devcontainer CLI or podman: `up` builds the container's run args itself and
+# has no publish option, so without help the ports are unreachable from the
+# host. Read the resolved configuration here (same --config override and the
+# same variable substitution `up` applies) and, for each plain-number port,
+# publish it by handing the CLI a podman wrapper that prepends
+# -p 127.0.0.1:<port>:<port> to `run` -- the exact form the CLI itself
+# derives from the legacy appPort property. Binding the host side to
+# 127.0.0.1 keeps the ports off the LAN. A config without forwardPorts never
+# sees the wrapper: docker_path stays plain podman and the `up` invocation is
+# unchanged (the read-configuration pre-flight still runs, and it executes no
+# lifecycle commands). One case does stop provisioning: a port already bound
+# on the host by something else fails podman's bind and `up` exits non-zero --
+# the directive itself asked for that bind, so fail loudly rather than drop
+# it silently.
+docker_path=podman
+ports=
+if command -v node >/dev/null 2>&1 && command -v devcontainer >/dev/null 2>&1; then
+  rc_args=(read-configuration --workspace-folder "$folder" --docker-path podman)
+  if [ -n "$config_path" ]; then
+    rc_args+=(--config "$config_path")
+  fi
+  if ! config_json=$(devcontainer "${rc_args[@]}") || ! ports=$(printf '%s\n' "$config_json" | node -e '
+let c = {};
+try { c = JSON.parse(require("fs").readFileSync(0, "utf8")).configuration || {}; }
+catch (e) { process.exit(3); }
+const fp = Array.isArray(c.forwardPorts) ? c.forwardPorts : [];
+if (c.forwardPorts != null && !Array.isArray(c.forwardPorts)) {
+  console.error("dev-up: warning: forwardPorts is not a list; cannot publish it");
+}
+if (c.dockerComposeFile != null && fp.length > 0) {
+  console.error("dev-up: warning: dockerComposeFile workspace; forwardPorts are not published here, declare them in the compose file");
+  process.exit(0);
+}
+// Ports the config already publishes itself, keyed on the HOST port (what a
+// second publish would collide with): runArgs -p/--publish specs in every
+// pflag spelling, and the legacy appPort property, which the CLI turns into
+// -p 127.0.0.1:<p>:<p>. A bare spec ("-p 3000") makes podman pick a random
+// host port, so it cannot collide and is ignored; a range host port
+// ("3000-3010:...") is expanded. "3000" in the set covers every protocol;
+// "3000/udp" covers udp only, so it never suppresses a TCP publish.
+const run = new Set();
+const addHostSpec = (v) => {
+  const parts = String(v).split(":");
+  if (parts.length < 2) return;
+  const cm = String(parts[parts.length - 1]).match(/^([0-9]+(?:-[0-9]+)?)(\/([a-z]+))?$/);
+  if (!cm) return;
+  const proto = cm[2] || "";
+  const hm = String(parts[parts.length - 2]).match(/^([0-9]+)(?:-([0-9]+))?$/);
+  if (!hm) return;
+  if (hm[2] !== undefined) {
+    for (let p = Number(hm[1]); p <= Number(hm[2]); p++) run.add(p + proto);
+  } else {
+    run.add(hm[1] + proto);
+  }
+};
+const runArgs = Array.isArray(c.runArgs) ? c.runArgs : [];
+for (let i = 0; i < runArgs.length; i++) {
+  const a = String(runArgs[i]);
+  if ((a === "-p" || a === "--publish") && i + 1 < runArgs.length) addHostSpec(runArgs[i + 1]);
+  else if (a.startsWith("--publish=")) addHostSpec(a.slice("--publish=".length));
+  else if (/^-p=/.test(a)) addHostSpec(a.slice(3));
+  else if (/^-p[0-9]/.test(a)) addHostSpec(a.slice(2));
+}
+for (const p of Array.isArray(c.appPort) ? c.appPort : [c.appPort]) {
+  if (typeof p === "number") run.add(String(p));
+  else if (p != null) addHostSpec(p);
+}
+// With host networking the container shares the host network namespace:
+// services are already reachable on the host, and podman silently ignores
+// publish flags there.
+for (let i = 0; i < runArgs.length; i++) {
+  const a = String(runArgs[i]);
+  const next = i + 1 < runArgs.length ? String(runArgs[i + 1]) : "";
+  if (/^--(network|net)=host$/.test(a) || ((a === "--network" || a === "--net") && next === "host")) {
+    console.error("dev-up: warning: runArgs use host networking; services are already reachable on the host, nothing to publish");
+    process.exit(0);
+  }
+}
+const published = (s) => run.has(s) || run.has(s + "/tcp");
+const out = [];
+const seen = new Set();
+for (const p of fp) {
+  const s = String(p);
+  if (!/^[0-9]+$/.test(s)) {
+    console.error("dev-up: warning: forwardPorts entry \"" + s + "\" is not a plain port number; cannot publish it");
+  } else if (Number(s) < 1 || Number(s) > 65535) {
+    console.error("dev-up: warning: forwardPorts " + s + " is out of range; cannot publish it");
+  } else if (seen.has(s)) {
+    // duplicate within forwardPorts itself: one -p is enough
+  } else {
+    seen.add(s);
+    if (published(s)) {
+      console.error("dev-up: forwardPorts " + s + " is already published by the config itself; leaving it alone");
+    } else {
+      out.push(s);
+    }
+  }
+}
+console.log(out.join("\n"));
+  '); then
+    echo "dev-up: warning: could not read or parse the resolved configuration; forwardPorts will not be published" >&2
+    ports=
+  fi
+else
+  echo "dev-up: warning: node or devcontainer not found; forwardPorts will not be published" >&2
+fi
+
+if [ -n "$ports" ]; then
+  if ! podman_bin=$(command -v podman); then
+    echo "dev-up: warning: podman not found; forwardPorts will not be published" >&2
+  else
+    publish_flags=()
+    while IFS= read -r p; do
+      if [ -n "$p" ]; then
+        publish_flags+=(-p "127.0.0.1:$p:$p")
+      fi
+    done <<< "$ports"
+    wrapper_dir=$(mktemp -d) || {
+      echo "dev-up: warning: cannot create a temp dir; forwardPorts will not be published" >&2
+      wrapper_dir=
+    }
+    if [ -n "$wrapper_dir" ]; then
+      tmpdirs+=("$wrapper_dir")
+      # The $ literals below are the wrapper script's own, not dev-up's.
+      # shellcheck disable=SC2016
+      {
+        printf '#!/bin/sh\n'
+        printf '# Generated by dev-up for this invocation only. The devcontainer CLI\n'
+        printf '# drops forwardPorts (the spec assigns forwarding to the attaching\n'
+        printf '# client), so dev-up publishes them here instead: `run` gains one -p\n'
+        printf '# per port; every other subcommand passes through untouched. The -v\n'
+        printf '# pass-through matters: the CLI detects the podman variant by running\n'
+        printf '# the binary with -v and reading its output. The seam this relies on\n'
+        printf '# is argv[1] being the subcommand; the fired marker lets dev-up notice\n'
+        printf '# if a future CLI stops invoking `run` that way.\n'
+        printf 'if [ "$1" = run ]; then\n'
+        printf '\tshift\n'
+        printf '\t: >> "$(dirname "$0")/fired"\n'
+        printf '\texec "%s" run' "$podman_bin"
+        printf ' %s' "${publish_flags[@]}"
+        printf ' "$@"\n'
+        printf 'fi\n'
+        printf 'exec "%s" "$@"\n' "$podman_bin"
+      } > "$wrapper_dir/podman"
+      chmod +x "$wrapper_dir/podman"
+      # A noexec TMPDIR makes the wrapper unexecutable even with +x; prove it
+      # runs before trusting it, else fall back to plain podman loudly.
+      if ! "$wrapper_dir/podman" -v >/dev/null 2>&1; then
+        echo "dev-up: warning: the podman wrapper failed to execute; forwardPorts will not be published" >&2
+      else
+        docker_path=$wrapper_dir/podman
+        echo "dev-up: publishing forwardPorts on 127.0.0.1: ${ports//$'\n'/ }"
+      fi
+    fi
   fi
 fi
 
@@ -214,7 +386,12 @@ else
   echo "dev-up: pi provisioning disabled (--no-pi)"
 fi
 
-# Not exec: the EXIT trap has to fire so the minted credential is removed.
-devcontainer "${args[@]}"
-status=$?
+args+=(--docker-path "$docker_path")
+
+# Not exec: the EXIT trap has to fire so the temp dirs are removed.
+status=0
+devcontainer "${args[@]}" || status=$?
+if [ "$status" -eq 0 ] && [ "$docker_path" != podman ] && [ ! -f "$wrapper_dir/fired" ]; then
+  echo "dev-up: warning: the CLI never invoked podman run through the wrapper; forwardPorts were not published" >&2
+fi
 exit "$status"
