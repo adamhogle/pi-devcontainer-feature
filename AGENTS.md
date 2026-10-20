@@ -147,10 +147,15 @@ what runs. Test a script change by using it: `dev-up` in a scratch workspace, th
 * **`dev-up` owns `forwardPorts`.** The devcontainer CLI drops the property (forwarding is
   the attaching client's job), so `dev-up` reads the resolved config and publishes
   plain-number ports on the host at `127.0.0.1` by handing the CLI a pass-through podman
-  wrapper on `--docker-path`. Numbers only; a port the config already publishes itself
-  (via `runArgs` or legacy `appPort`) wins; compose workspaces and host-networking
-  `runArgs` are skipped. The one exception to never-block-provisioning: a host port already
-  bound elsewhere fails `up` loudly, because the directive itself asked for that bind.
+  wrapper on `--docker-path`. Plain-number ports bind `127.0.0.1`; entries that are valid
+  publish specs (`[ip:]host[:container][/proto]`, decimal ports, tcp/udp, equal-width
+  ranges) pass through verbatim so a workspace can scope the bind itself; a port the
+  config already publishes itself (via `runArgs`, legacy `appPort`, or an earlier
+  `forwardPorts` spec — first entry wins) wins, and an overlapping spec is dropped whole
+  with the winner named; non-spec strings, compose workspaces and host-networking
+  `runArgs` warn-and-skip. The one exception to never-block-provisioning: a host port
+  already bound elsewhere fails `up` loudly, because the directive itself asked for that
+  bind.
 * **`share/` is for files that run *inside* the container; `bin/` is for the host.**
   `install.sh` symlinks every file in `bin/` onto the host `PATH`. `share/herdr-shim` is
   named `herdr` once mounted, so putting it in `bin/` would shadow the user's real herdr on

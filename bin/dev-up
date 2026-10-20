@@ -6,9 +6,10 @@
 #   --no-pi     plain dev container: no pi feature, no pi mounts, no pi label
 #   --config    use this devcontainer.json instead of the one found in the tree
 #
-# forwardPorts in the workspace devcontainer.json are published on the host,
-# bound to 127.0.0.1. The devcontainer CLI itself ignores them (forwarding is
-# the attaching client's job per the spec); see the forwardPorts section below.
+# forwardPorts in the workspace devcontainer.json are published on the host --
+# plain numbers bound to 127.0.0.1, publish-spec entries verbatim. The
+# devcontainer CLI itself ignores them (forwarding is the attaching client's
+# job per the spec); see the forwardPorts section below.
 #
 # Provisioning for pi is applied here and nowhere else: the repo's
 # devcontainer.json must never mention pi. This script owns every coupling
@@ -219,17 +220,21 @@ fi
 # devcontainer CLI or podman: `up` builds the container's run args itself and
 # has no publish option, so without help the ports are unreachable from the
 # host. Read the resolved configuration here (same --config override and the
-# same variable substitution `up` applies) and, for each plain-number port,
-# publish it by handing the CLI a podman wrapper that prepends
-# -p 127.0.0.1:<port>:<port> to `run` -- the exact form the CLI itself
-# derives from the legacy appPort property. Binding the host side to
-# 127.0.0.1 keeps the ports off the LAN. A config without forwardPorts never
+# same variable substitution `up` applies) and publish it by handing the CLI
+# a podman wrapper that prepends -p flags to `run`: plain-number ports as
+# -p 127.0.0.1:<port>:<port> -- the exact form the CLI itself derives from
+# the legacy appPort property -- and entries that are publish specs
+# ([ip:]host[:container][/proto]) verbatim, so a workspace can scope the
+# host bind itself ("0.0.0.0:6080:6080" publishes on every interface).
+# Numeric binding keeps the ports off the LAN by default. Specs that overlap
+# a publish the config already declares, and entries podman would reject,
+# are dropped with a warning; a port still bound by something outside the
+# config fails podman's bind and `up` exits non-zero -- the directive asked
+# for that bind, so fail loudly rather than drop it silently. A config
+# without forwardPorts never
 # sees the wrapper: docker_path stays plain podman and the `up` invocation is
 # unchanged (the read-configuration pre-flight still runs, and it executes no
-# lifecycle commands). One case does stop provisioning: a port already bound
-# on the host by something else fails podman's bind and `up` exits non-zero --
-# the directive itself asked for that bind, so fail loudly rather than drop
-# it silently.
+# lifecycle commands).
 docker_path=podman
 ports=
 if command -v node >/dev/null 2>&1 && command -v devcontainer >/dev/null 2>&1; then
@@ -252,36 +257,53 @@ if (c.dockerComposeFile != null && fp.length > 0) {
 // Ports the config already publishes itself, keyed on the HOST port (what a
 // second publish would collide with): runArgs -p/--publish specs in every
 // pflag spelling, and the legacy appPort property, which the CLI turns into
-// -p 127.0.0.1:<p>:<p>. A bare spec ("-p 3000") makes podman pick a random
-// host port, so it cannot collide and is ignored; a range host port
-// ("3000-3010:...") is expanded. "3000" in the set covers every protocol;
-// "3000/udp" covers udp only, so it never suppresses a TCP publish.
-const run = new Set();
-const addHostSpec = (v) => {
-  const parts = String(v).split(":");
-  if (parts.length < 2) return;
-  const cm = String(parts[parts.length - 1]).match(/^([0-9]+(?:-[0-9]+)?)(\/([a-z]+))?$/);
-  if (!cm) return;
-  const proto = cm[2] || "";
-  const hm = String(parts[parts.length - 2]).match(/^([0-9]+)(?:-([0-9]+))?$/);
-  if (!hm) return;
-  if (hm[2] !== undefined) {
-    for (let p = Number(hm[1]); p <= Number(hm[2]); p++) run.add(p + proto);
-  } else {
-    run.add(hm[1] + proto);
+// -p 127.0.0.1:<p>:<p>.
+const run = new Map();
+// Full publish-spec gate: [ip:]host[:container][/proto] with decimal ports
+// (no leading zeros), tcp/udp only, ranges only with equal width, and the
+// address a dotted quad (octets <= 255) or a bracketed IPv6 literal. These
+// are exactly the shapes podman accepts (measured: it rejects mismatched
+// range widths, inverted ranges, out-of-range ports, other protocols, and
+// an address without a container port), and the strictness keeps arbitrary
+// config text -- quotes, spaces, letters in the address -- out of the
+// generated wrapper command line. A bare port with no address ("-p 3000")
+// makes podman pick a random host port, so it has no key. Keys are "7400"
+// or "7400/tcp" (a TCP publish) and "7400/udp"; bare means tcp.
+const hostKeyOf = (v) => {
+  const m = String(v).match(/^((((?:0|[1-9][0-9]{0,2})(?:\.(?:0|[1-9][0-9]{0,2})){3})|(\[[0-9A-Fa-f:.]+\])):)?((?:0|[1-9][0-9]{0,4}))(?:-((?:0|[1-9][0-9]{0,4})))?(?::((?:0|[1-9][0-9]{0,4}))(?:-((?:0|[1-9][0-9]{0,4})))?)?(?:\/((?:tcp|udp)))?$/i);
+  if (!m) return null;
+  if (m[3] !== undefined) {
+    for (const octet of m[3].split(".")) if (Number(octet) > 255) return null;
   }
+  const lo = Number(m[5]);
+  const hi = m[6] !== undefined ? Number(m[6]) : lo;
+  const clo = m[7] !== undefined ? Number(m[7]) : null;
+  const chi = m[8] !== undefined ? Number(m[8]) : (clo === null ? null : clo);
+  if (clo === null) return null;
+  if (lo > hi || clo > chi) return null;
+  const hostRange = hi !== lo;
+  const contRange = chi !== clo;
+  if (hostRange !== contRange) return null;
+  if (hostRange && hi - lo !== chi - clo) return null;
+  if (lo < 1 || hi > 65535 || clo < 1 || chi > 65535) return null;
+  return { proto: m[9] ? "/" + m[9].toLowerCase() : "", lo, hi };
+};
+const addHostSpec = (v, source) => {
+  const k = hostKeyOf(v);
+  if (!k) return;
+  for (let p = k.lo; p <= k.hi; p++) run.set(p + k.proto, source);
 };
 const runArgs = Array.isArray(c.runArgs) ? c.runArgs : [];
 for (let i = 0; i < runArgs.length; i++) {
   const a = String(runArgs[i]);
-  if ((a === "-p" || a === "--publish") && i + 1 < runArgs.length) addHostSpec(runArgs[i + 1]);
-  else if (a.startsWith("--publish=")) addHostSpec(a.slice("--publish=".length));
-  else if (/^-p=/.test(a)) addHostSpec(a.slice(3));
-  else if (/^-p[0-9]/.test(a)) addHostSpec(a.slice(2));
+  if ((a === "-p" || a === "--publish") && i + 1 < runArgs.length) addHostSpec(runArgs[i + 1], "runArgs");
+  else if (a.startsWith("--publish=")) addHostSpec(a.slice("--publish=".length), "runArgs");
+  else if (/^-p=/.test(a)) addHostSpec(a.slice(3), "runArgs");
+  else if (/^-p[0-9]/.test(a)) addHostSpec(a.slice(2), "runArgs");
 }
 for (const p of Array.isArray(c.appPort) ? c.appPort : [c.appPort]) {
-  if (typeof p === "number") run.add(String(p));
-  else if (p != null) addHostSpec(p);
+  if (typeof p === "number") run.set(String(p), "appPort");
+  else if (p != null) addHostSpec(p, "appPort");
 }
 // With host networking the container shares the host network namespace:
 // services are already reachable on the host, and podman silently ignores
@@ -294,26 +316,75 @@ for (let i = 0; i < runArgs.length; i++) {
     process.exit(0);
   }
 }
-const published = (s) => run.has(s) || run.has(s + "/tcp");
-const out = [];
-const seen = new Set();
-for (const p of fp) {
-  const s = String(p);
-  if (!/^[0-9]+$/.test(s)) {
-    console.error("dev-up: warning: forwardPorts entry \"" + s + "\" is not a plain port number; cannot publish it");
-  } else if (Number(s) < 1 || Number(s) > 65535) {
-    console.error("dev-up: warning: forwardPorts " + s + " is out of range; cannot publish it");
-  } else if (seen.has(s)) {
-    // duplicate within forwardPorts itself: one -p is enough
-  } else {
-    seen.add(s);
-    if (published(s)) {
-      console.error("dev-up: forwardPorts " + s + " is already published by the config itself; leaving it alone");
-    } else {
-      out.push(s);
+// Does publishing the host ports of k collide with the entries in map?
+// Returns the source that owns the colliding key, or null. Keys are
+// "7400"/"7400/tcp" (a TCP publish) and "7400/udp"; bare means tcp, so a
+// udp spec only collides with a udp publish and tcp with tcp or bare.
+const conflicts = (k, map) => {
+  for (let p = k.lo; p <= k.hi; p++) {
+    if (k.proto === "/udp") {
+      if (map.has(p + "/udp")) return map.get(p + "/udp");
+    } else if (map.has(String(p))) {
+      return map.get(String(p));
+    } else if (map.has(p + "/tcp")) {
+      return map.get(p + "/tcp");
     }
   }
+  return null;
+};
+// Classify forwardPorts: plain numbers (numeric strings included) get the
+// 127.0.0.1 treatment; other entries pass through verbatim when they are
+// publish specs ("0.0.0.0:6080:6080", "6080:6080/udp", equal-width ranges),
+// else they warn-and-skip -- "db:5432" names a compose service, not a
+// publish spec, and podman would reject it.
+const nums = [];
+const specs = [];
+const seenNum = new Set();
+const seenSpec = new Set();
+for (const p of fp) {
+  const s = String(p);
+  if (/^[0-9]+$/.test(s)) {
+    const n = Number(s);
+    if (n < 1 || n > 65535) {
+      console.error("dev-up: warning: forwardPorts " + s + " is out of range; cannot publish it");
+    } else if (!seenNum.has(n)) {
+      seenNum.add(n);
+      nums.push(String(n));
+    }
+  } else if (!hostKeyOf(s)) {
+    console.error("dev-up: warning: forwardPorts entry \"" + s + "\" is not a publishable port or spec; cannot publish it");
+  } else if (!seenSpec.has(s)) {
+    seenSpec.add(s);
+    specs.push(s);
+  }
 }
+// Host ports the forwardPorts specs themselves publish. An explicit spec
+// beats an implicit numeric entry for the same port, and a later spec that
+// would double-bind an earlier one (or a runArgs/appPort publish) is
+// dropped, with the winner named in the message.
+const specHosts = new Map();
+const kept = [];
+for (const sp of specs) {
+  const k = hostKeyOf(sp);
+  const hit = conflicts(k, run) || conflicts(k, specHosts);
+  if (hit) {
+    console.error("dev-up: forwardPorts spec \"" + sp + "\" is already published by " + hit + "; leaving it alone");
+  } else {
+    kept.push(sp);
+    for (let p = k.lo; p <= k.hi; p++) specHosts.set(p + k.proto, "forwardPorts spec \"" + sp + "\"");
+  }
+}
+const out = [];
+for (const s of nums) {
+  const k = { proto: "", lo: Number(s), hi: Number(s) };
+  const hit = conflicts(k, run) || conflicts(k, specHosts);
+  if (hit) {
+    console.error("dev-up: forwardPorts " + s + " is already published by " + hit + "; leaving it alone");
+  } else {
+    out.push(s);
+  }
+}
+for (const sp of kept) out.push(sp);
 console.log(out.join("\n"));
   '); then
     echo "dev-up: warning: could not read or parse the resolved configuration; forwardPorts will not be published" >&2
@@ -330,7 +401,12 @@ if [ -n "$ports" ]; then
     publish_flags=()
     while IFS= read -r p; do
       if [ -n "$p" ]; then
-        publish_flags+=(-p "127.0.0.1:$p:$p")
+        case $p in
+          # pure digits get the 127.0.0.1 bind; anything else is a validated
+          # publish spec from the parser and passes through verbatim
+          *[!0-9]*) publish_flags+=(-p "$p") ;;
+          *) publish_flags+=(-p "127.0.0.1:$p:$p") ;;
+        esac
       fi
     done <<< "$ports"
     wrapper_dir=$(mktemp -d) || {
@@ -355,7 +431,7 @@ if [ -n "$ports" ]; then
         printf '\tshift\n'
         printf '\t: >> "$(dirname "$0")/fired"\n'
         printf '\texec "%s" run' "$podman_bin"
-        printf ' %s' "${publish_flags[@]}"
+        printf " '%s'" "${publish_flags[@]}"
         printf ' "$@"\n'
         printf 'fi\n'
         printf 'exec "%s" "$@"\n' "$podman_bin"
@@ -367,7 +443,7 @@ if [ -n "$ports" ]; then
         echo "dev-up: warning: the podman wrapper failed to execute; forwardPorts will not be published" >&2
       else
         docker_path=$wrapper_dir/podman
-        echo "dev-up: publishing forwardPorts on 127.0.0.1: ${ports//$'\n'/ }"
+        echo "dev-up: publishing forwardPorts: ${ports//$'\n'/ }"
       fi
     fi
   fi

@@ -55,12 +55,18 @@ ports are unreachable from the host.
 
 `dev-up` therefore reads the resolved configuration (same `--config` override and variable
 substitution as `up`) and publishes each plain-number port itself — TCP only — bound to
-`127.0.0.1` on the host, keeping the ports off the LAN. Entries that are not plain numbers
-(`"db:5432"`, ranges, `/udp`) cannot be published this way and earn a warning; ports the
-config already publishes itself — via `runArgs` or the legacy `appPort` property — are left
-alone; compose workspaces are skipped, since services there are started by the compose CLI
-— declare their ports in the compose file; and with `--network=host` in `runArgs` nothing
-is published, because the container already shares the host's network.
+`127.0.0.1` on the host, keeping the ports off the LAN. Non-numeric entries pass through
+verbatim when they are publish specs of the form `[ip:]host[:container][/proto]` — decimal
+ports, `tcp`/`udp` only, ranges only with equal width, the address a dotted quad or a
+bracketed IPv6 literal — so `"0.0.0.0:6080:6080"` publishes on every host interface and
+`"127.0.0.1:6080:6080"` on loopback; anything else (`"db:5432"` names a compose service,
+malformed or out-of-range specs) earns a warning and is skipped. Ports the config already
+publishes itself — via `runArgs`, the legacy `appPort` property, or an earlier
+`forwardPorts` spec (first entry wins) — are left alone; a spec overlapping an
+already-published port is dropped whole, with the winner named in the message. Compose
+workspaces are skipped, since services there are started by the compose CLI — declare
+their ports in the compose file; and with `--network=host` in `runArgs` nothing is
+published, because the container already shares the host's network.
 
 One case stops provisioning: a port already bound on the host by something else — another
 dev container, a dev server — fails podman's bind and `up` exits non-zero. The directive
