@@ -74,6 +74,40 @@ for var in $shim_vars; do
   grep -qE -- "-e \"?$var=" bin/dev-pi || err "share/herdr-shim reads $var but bin/dev-pi never forwards it"
 done
 
+# --- hc (herdr-core) bridge: the four sides must name the same paths --------
+# dev-up mounts the hc binary, the core socket, the shim and pi's state
+# extension; dev-pi verifies the mounts and points HC_SOCKET / PI_HC_REAL at
+# them; the shim defaults to the same paths. Targets are deliberately distinct
+# from the herdr bridge's (/opt/pi/herdr-core, /usr/local/bin/hc) so the two
+# coexist -- and the shim's target must be an `hc` on PATH, or container-side hc
+# calls fail with the bridge silently headless despite every mount present. The
+# extension has to land inside the mounted agent dir's extensions/, where pi
+# actually looks.
+expect_in /opt/pi/herdr-core bin/dev-up bin/dev-pi share/hc-shim
+expect_in /opt/pi/herdr-core.sock bin/dev-up bin/dev-pi
+expect_in /usr/local/bin/hc bin/dev-up
+expect_in /opt/pi/agent/extensions/hc-agent-state.ts bin/dev-up
+expect_in HC_TERMINAL_ID bin/dev-pi share/hc-shim share/hc-agent-state.ts
+[ -x share/hc-shim ] || err "share/hc-shim is not executable; the mount would be an hc that cannot run"
+[ -r share/hc-agent-state.ts ] || err "share/hc-agent-state.ts is not readable; the mount would be an empty extension"
+
+# Same rule as the herdr shim: every variable share/hc-shim reads must be one
+# dev-pi forwards, or the shim reads an empty value -- and for
+# PI_BOX_CONTAINER_ID that degrades to a pass-through failing visibly on the
+# host. The re-forward for-lists are parsed literally (the ${!v} indirection
+# hides them from the ${VAR scan).
+# shellcheck disable=SC2016  # matching the literal ${VAR text in the shim, not expanding it
+hc_shim_vars=$(
+  {
+    grep -oE '\$\{(PI_BOX_[A-Z_]+|PI_HC_[A-Z_]+|HC_SOCKET)' share/hc-shim
+    awk '/for v in /{capture=1} capture{print} /; do$/{capture=0}' share/hc-shim
+  } | grep -oE '(PI_BOX_[A-Z_]+|PI_HC_[A-Z_]+|HC_SOCKET)' | sort -u
+)
+for var in $hc_shim_vars; do
+  [ "$var" = HC_TERMINAL_ID ] && continue  # assigned by hc itself; deliberately not forwarded
+  grep -qE -- "-e \"?$var=" bin/dev-pi || err "share/hc-shim reads $var but bin/dev-pi never forwards it"
+done
+
 # --- the agent dir must resolve to the same path everywhere -----------------
 # Compare resolved values, not literals: install.sh composes its paths from
 # $PREFIX, so grepping for /opt/pi/agent there would fail on a correct file.

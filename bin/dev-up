@@ -20,6 +20,10 @@ PI_SSH_TARGET=/ssh-agent
 PI_HERDR_TARGET=/opt/pi/herdr
 PI_HERDR_SOCK_TARGET=/opt/pi/herdr.sock
 PI_HERDR_SHIM_TARGET=/usr/local/bin/herdr
+PI_HC_TARGET=/opt/pi/herdr-core
+PI_HC_SOCK_TARGET=/opt/pi/herdr-core.sock
+PI_HC_SHIM_TARGET=/usr/local/bin/hc
+PI_HC_STATE_TARGET=/opt/pi/agent/extensions/hc-agent-state.ts
 
 rebuild=0
 with_pi=1
@@ -178,6 +182,38 @@ if [ "$with_pi" -eq 1 ]; then
     echo "dev-up: herdr bridge enabled ($herdr_bin)"
   elif [ -n "$herdr_bin" ] && [ ! -S "$herdr_sock" ]; then
     echo "dev-up: note: herdr installed but not running ($herdr_sock is not a socket); subagents will be headless" >&2
+  fi
+
+  # --- herdr-core (hc) bridge --------------------------------------------------
+  # hc is the newer runtime: terminals live in the hc core, agents report state
+  # with OSC 7501 through their pty, and the CLI drives the core over its socket.
+  # Four mounts cross the boundary: the core socket (so the container can reach
+  # the CLI), the hc binary (statically linked, so the host copy runs on any
+  # base image), share/hc-shim as /usr/local/bin/hc (rewrites `hc run` to re-enter
+  # this container), and share/hc-agent-state.ts into the mounted agent
+  # dir (pi's side of the status report). dev-pi forwards the matching HC_* and
+  # PI_BOX_* variables per session, and only when it runs inside an hc terminal.
+  #
+  # Opt-in exactly like the herdr bridge: no running core, no mounts, headless as
+  # before -- and the two bridges are independent mounts that coexist, so moving
+  # a host over does not tear the other one down. Which one a session uses is
+  # decided by dev-pi at attach time.
+  hc_bin=${HERDR_CORE_BIN_PATH:-$(command -v herdr-core 2>/dev/null || command -v hc 2>/dev/null || true)}
+  hc_sock=${HC_SOCKET_PATH:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/herdr-core/default.sock}
+  hc_shim=$(cd "$(dirname "$(readlink -f "$0")")/../share" && pwd)/hc-shim
+  hc_state=$(cd "$(dirname "$(readlink -f "$0")")/../share" && pwd)/hc-agent-state.ts
+
+  if [ -n "$hc_bin" ] && [ -x "$hc_bin" ] && [ -S "$hc_sock" ] && [ -x "$hc_shim" ] && [ -r "$hc_state" ]; then
+    args+=(--mount "type=bind,source=$hc_bin,target=$PI_HC_TARGET")
+    args+=(--mount "type=bind,source=$hc_sock,target=$PI_HC_SOCK_TARGET")
+    args+=(--mount "type=bind,source=$hc_shim,target=$PI_HC_SHIM_TARGET")
+    # Nested inside the agent-dir mount above: pi loads extensions from
+    # <agent dir>/extensions, and this keeps the reporter repo-owned instead of
+    # relying on host state in ~/.pi/agent.
+    args+=(--mount "type=bind,source=$hc_state,target=$PI_HC_STATE_TARGET")
+    echo "dev-up: hc bridge enabled ($hc_bin, core socket $hc_sock)"
+  elif [ -n "$hc_bin" ] && [ ! -S "$hc_sock" ]; then
+    echo "dev-up: note: herdr-core installed but no core socket ($hc_sock); hc calls will be headless" >&2
   fi
 
   # pi itself, as an image layer. Version is pinned to the host's pi so the

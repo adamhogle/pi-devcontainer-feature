@@ -1,0 +1,327 @@
+#!/usr/bin/env bash
+# hc shim -- the container half of the herdr-core (hc) bridge.
+#
+# Mounted by dev-up at /usr/local/bin/hc; the real (host) binary sits at
+# /opt/pi/herdr-core, off PATH. The host core's socket arrives at
+# /opt/pi/herdr-core.sock and dev-pi points HC_SOCKET at it. Everything the
+# agent runs against hc inside the container goes through here.
+#
+# Why this exists
+# ---------------
+# hc runs on the HOST; pi runs in the CONTAINER. Two things do not survive that
+# boundary on their own:
+#
+# 1. Commands an agent composes are CONTAINER paths. `hc run <cmd>` starts a
+#    host-side terminal running a host shell, so a command like
+#
+#        cd /workspaces/foo && pi --session state/sessions/x.jsonl
+#
+#    fails the cd on the host and runs the wrong pi. So `run` (and the classic
+#    `pane run`, kept for agents trained on the herdr bridge) is rewritten, in
+#    two shapes:
+#
+#        <cmd>          ->  podman exec -it -u <user> -w <cwd> <cid> bash -lc '<cmd>'
+#        pi <args>      ->  dev-pi <args>          (on the host; it re-enters itself)
+#
+#    The podman call executes in the new hc terminal, not here, so this
+#    container needs no podman client -- only the identity dev-pi passes in.
+#    An agent launch goes out to dev-pi instead: that script is the single
+#    source of the session policy (--forward allowlist, version skew) and lives
+#    host-side, so a raw pi in the container would run without it -- the one
+#    failure mode that looks like it worked.
+#
+# 2. The CLI must reach the host core; that is what the socket mount plus
+#    HC_SOCKET are for.
+#
+# Status reporting needs nothing here: share/herdr-core-agent-state.ts emits
+# OSC 7501 on pi's own events and the exec's pty pipes it into the hc terminal,
+# which is what Ovis and `hc get` read.
+#
+# `--cwd` arguments are translated for the same reason run is: hc takes a
+# host-side path, and the agent passes its own container-side cwd.
+#
+# Host template names are not resolved in here (their files live host-side):
+# every run argument is treated as a command, so launch a template from the
+# host, or pass its command yourself.
+#
+# Inputs (all from bin/dev-pi, see the hc bridge section there):
+#   PI_HC_REAL             real hc binary                (default /opt/pi/herdr-core)
+#   HC_SOCKET              mounted core socket           (default /opt/pi/herdr-core.sock)
+#   PI_BOX_CONTAINER_ID    container to re-enter         (required to rewrite)
+#   PI_BOX_USER            user for the re-entry exec
+#   PI_BOX_WORKSPACE       container-side workspace root
+#   PI_BOX_HOST_FOLDER     host-side workspace root
+#   PI_BOX_HOST_AGENT_DIR  host-side agent dir, for session-path reporting
+#   PI_BOX_FORWARD         credential names to re-forward, comma separated
+set -euo pipefail
+
+REAL=${PI_HC_REAL:-/opt/pi/herdr-core}
+export HC_SOCKET=${HC_SOCKET:-/opt/pi/herdr-core.sock}
+
+[ -x "$REAL" ] || {
+  echo "hc-shim: real herdr-core not found at $REAL" >&2
+  echo "hc-shim: the hc bridge mount is missing; re-run dev-up and launch via dev-pi" >&2
+  exit 127
+}
+
+# Without an identity there is nothing to re-enter, so stay a pass-through.
+# Rewriting with a blank id would emit a broken podman call into a new terminal;
+# a plain pass-through instead leaves a visible host-side failure, which is the
+# honest symptom of a half-configured bridge.
+if [ -z "${PI_BOX_CONTAINER_ID:-}" ]; then
+  exec "$REAL" "$@"
+fi
+
+# Map a container path onto its host equivalent. Only the workspace root is
+# translatable (same rule as share/herdr-shim): guessing beyond it would be
+# worse than leaving the path alone.
+to_host_path() {
+  local path=$1
+  if [ -n "${PI_BOX_WORKSPACE:-}" ] && [ -n "${PI_BOX_HOST_FOLDER:-}" ]; then
+    case "$path" in
+      "$PI_BOX_WORKSPACE") printf '%s' "$PI_BOX_HOST_FOLDER"; return ;;
+      "$PI_BOX_WORKSPACE"/*) printf '%s%s' "$PI_BOX_HOST_FOLDER" "${path#"$PI_BOX_WORKSPACE"}"; return ;;
+    esac
+  fi
+  printf '%s' "$path"
+}
+
+# Single-quote for the host shell: close, escape, reopen around each quote.
+shell_escape() {
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
+# Build the host-side command for a container-side command string: the podman
+# re-entry, shaped exactly like dev-pi's own exec so the re-entered agent sees
+# the same mounts, identity and policy as its parent session.
+build_reentry() {
+  local command=$1
+  local env_args=""
+
+  # -e NAME (no '=') passes the value through from the launching environment
+  # rather than argv, so credentials never land in ps aux -- the same rule
+  # dev-pi follows. The launching environment here is the one the hc core runs
+  # in (the shell that started it, its systemd user environment), so a name
+  # that is not exported there arrives empty. That is the trade the classic
+  # bridge already makes for the same reason; DEV_PI_FORWARD stays the only
+  # place credentials are named anywhere in this repo.
+  if [ -n "${PI_BOX_FORWARD:-}" ]; then
+    IFS=',' read -r -a forward_names <<< "$PI_BOX_FORWARD"
+    for name in "${forward_names[@]}"; do
+      name=${name#"${name%%[![:space:]]*}"}
+      name=${name%"${name##*[![:space:]]}"}
+      [ -n "$name" ] || continue
+      env_args+=" -e $(shell_escape "$name")"
+    done
+  fi
+
+  # Fixed container-side settings, mirroring dev-pi's own exec.
+  env_args+=" -e PI_CODING_AGENT_DIR=/opt/pi/agent -e PI_OFFLINE=1"
+  # Names only (never values), so dev-pi's startup gate is satisfied in the
+  # subagent; its own exec re-reads the values from this environment.
+  env_args+=" -e DEV_PI_FORWARD=$(shell_escape "${PI_BOX_FORWARD:-}")"
+  # Pass-through (no '='): this call runs inside the NEW hc terminal, so hc's
+  # own HC_TERMINAL_ID comes along -- which is what lets the subagent's dev-pi
+  # fire the hc bridge in turn, and what the state extension gates on.
+  env_args+=" -e HC_TERMINAL_ID"
+  [ -n "${SSH_AUTH_SOCK:-}" ] && env_args+=" -e SSH_AUTH_SOCK=$(shell_escape "$SSH_AUTH_SOCK")"
+  for v in TERM COLORTERM LANG; do
+    [ -n "${!v:-}" ] && env_args+=" -e $v=$(shell_escape "${!v}")"
+  done
+
+  # Re-forward the bridge itself so a subagent can start its own subagents. The
+  # rest of the identity must ride along so the subagent's shim can rewrite in
+  # turn, and so the state extension can report session paths at their host
+  # spelling (PI_BOX_HOST_AGENT_DIR, PI_CODING_AGENT_DIR).
+  for v in HC_SOCKET PI_HC_REAL \
+           PI_BOX_CONTAINER_ID PI_BOX_USER PI_BOX_WORKSPACE \
+           PI_BOX_HOST_FOLDER PI_BOX_HOST_AGENT_DIR PI_BOX_FORWARD \
+           ENVCHAIN_NAMESPACE; do
+    [ -n "${!v:-}" ] && env_args+=" -e $v=$(shell_escape "${!v}")"
+  done
+
+  # The exec's starting point inside the container; the agent's own cd takes
+  # over immediately in most commands, so the session cwd is the sane default.
+  local workdir=$PWD
+  [ -d "$workdir" ] || workdir=${PI_BOX_WORKSPACE:-/}
+
+  # Wrapped so the hc terminal's shell stays underneath: the subagent exiting
+  # leaves the finished terminal to read, and closing it stays the caller's
+  # decision. exec -a names the process for anything reading argv0 out of
+  # /proc (ps, monitors); hc takes agent status from OSC 7501, not argv0.
+  printf '( exec -a pi podman exec -it -u %s -w %s%s %s bash -lc %s )' \
+    "$(shell_escape "${PI_BOX_USER:-root}")" \
+    "$(shell_escape "$workdir")" \
+    "$env_args" \
+    "$(shell_escape "$PI_BOX_CONTAINER_ID")" \
+    "$(shell_escape "$command")"
+}
+
+# Build the host-side command for an agent launch: `dev-pi`, on the host, which
+# performs the container exec itself. Agents type `pi ...`; the container has no
+# dev-pi (bin/ is host-side by design), and a raw pi inside it would skip the
+# policy dev-pi owns. HC_TERMINAL_ID needs no passing: hc set it for this
+# terminal's own program, and dev-pi inherits it, which is what fires the hc
+# bridge down the chain.
+build_host_devpi() {
+  local line
+  line="DEV_PI_FORWARD=$(shell_escape "${PI_BOX_FORWARD:-}")"
+  [ -n "${DEV_PI_ALLOW_SKEW:-}" ] &&
+    line+=" DEV_PI_ALLOW_SKEW=$(shell_escape "$DEV_PI_ALLOW_SKEW")"
+  line+=" dev-pi"
+  if [ "$#" -gt 0 ]; then
+    local word
+    for word in "$@"; do line+=" $(shell_escape "$word")"; done
+  fi
+  printf '%s' "$line"
+}
+
+# hc run with rewrite: split hc flags from command words, translate --cwd, and
+# hand the built line to the real binary. Flags that take a value are
+# enumerated; anything else starting with a dash stays a flag, and everything
+# after the first command word (or --) is the command.
+run_rewritten() {
+  local -a flags=() cmd=()
+  local prev='' take_value=0 seen_cmd=0
+  while [ $# -gt 0 ]; do
+    if [ "$take_value" -eq 1 ]; then
+      if [ "$prev" = "--cwd" ]; then
+        flags+=("$(to_host_path "$1")")
+      else
+        flags+=("$1")
+      fi
+      take_value=0
+      shift
+      continue
+    fi
+    # hc takes its options first and the program after them; once a command
+    # word has appeared, everything that follows belongs to the command. Any
+    # other rule would steal the program's own --flags into hc's flag list.
+    if [ "$seen_cmd" -eq 1 ]; then
+      cmd+=("$1"); shift; continue
+    fi
+    case "$1" in
+      --cwd)          flags+=(--cwd); prev=--cwd; take_value=1; shift ;;
+      --cwd=*)        flags+=("--cwd=$(to_host_path "${1#--cwd=}")"); shift ;;
+      --name|--on|--timeout|--label|--parent)
+                      flags+=("$1"); prev="$1"; take_value=1; shift ;;
+      --)             shift; seen_cmd=1
+                      while [ $# -gt 0 ]; do cmd+=("$1"); shift; done ;;
+      --*)            flags+=("$1"); shift ;;
+      *)              cmd+=("$1"); seen_cmd=1; shift ;;
+    esac
+  done
+
+  if [ ${#cmd[@]} -eq 0 ]; then
+    # No command: a plain terminal. Nothing to translate inside it.
+    exec "$REAL" run ${flags[@]+"${flags[@]}"}
+  fi
+
+  # `--on <machine>` says the caller wants the terminal somewhere else; a podman
+  # re-entry into THIS container would be wrong there, so honour the request and
+  # leave the command as written (its paths are the caller's problem, as they
+  # were before the bridge existed).
+  local f
+  for f in ${flags[@]+"${flags[@]}"}; do
+    case "$f" in
+      --on)
+        echo "hc-shim: --on runs that machine's shell; not re-entering this container" >&2
+        exec "$REAL" run ${flags[@]+"${flags[@]}"} ${cmd[@]+"${cmd[@]}"}
+        ;;
+    esac
+  done
+
+  local command line
+  command=$(printf '%s ' "${cmd[@]}")
+  command=${command% }
+
+  # Agents type `pi ...` (some the wrapper, `dev-pi`). Both mean "start another
+  # agent in this workspace", and that launch belongs on the host with dev-pi.
+  # Everything else -- a test run, a build -- is a container command and
+  # re-enters.
+  case "${cmd[0]:-}" in
+    pi|dev-pi)
+      local -a pi_args=("${cmd[@]}")
+      [ "${pi_args[0]}" = pi ] && pi_args=("${pi_args[@]:1}")
+      line=$(build_host_devpi ${pi_args[@]+"${pi_args[@]}"})
+      ;;
+    *)
+      line=$(build_reentry "$command")
+      ;;
+  esac
+
+  # The new terminal's shell needs a host-side starting folder. hc takes the
+  # core's cwd when a run arrives over the API, so pass one explicitly: this
+  # session's cwd when it is inside the workspace (mapped), otherwise the
+  # workspace's host folder -- an unmapped container path would not exist out
+  # there and the terminal would never start.
+  local has_cwd=0 start=$PWD
+  for f in ${flags[@]+"${flags[@]}"}; do
+    case "$f" in --cwd|--cwd=*) has_cwd=1 ;; esac
+  done
+  if [ "$has_cwd" -eq 0 ]; then
+    if [ -z "${PI_BOX_WORKSPACE:-}" ] || [ -z "${PI_BOX_HOST_FOLDER:-}" ]; then
+      start=${PI_BOX_HOST_FOLDER:-$start}
+    else
+      case "$start" in
+        "$PI_BOX_WORKSPACE"|"$PI_BOX_WORKSPACE"/*) ;;
+        *) start=$PI_BOX_HOST_FOLDER ;;
+      esac
+    fi
+    flags+=(--cwd "$(to_host_path "$start")")
+  fi
+
+  # hc starts the program directly, not through a shell (it execs argv), so the
+  # command has to arrive as something hc can exec: an absolute bash, with the
+  # line as its single argument. Absolute because this runs in the core's
+  # environment, whose PATH is the systemd user service's, not a login shell's.
+  exec "$REAL" run ${flags[@]+"${flags[@]}"} /bin/bash -lc "$line"
+}
+
+# Rewrite any --cwd value in place; every other argument passes through.
+# Result lands in the global `translated`.
+translated=()
+translate_cwd_args() {
+  translated=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --cwd)
+        if [ $# -ge 2 ]; then
+          translated+=(--cwd "$(to_host_path "$2")")
+          shift 2
+          continue
+        fi
+        ;;
+      --cwd=*)
+        translated+=("--cwd=$(to_host_path "${1#--cwd=}")")
+        shift
+        continue
+        ;;
+    esac
+    translated+=("$1")
+    shift
+  done
+}
+
+case "${1:-}" in
+  run)
+    shift
+    run_rewritten "$@"
+    ;;
+  pane)
+    # Classic-bridge compatibility: agents trained on `herdr pane run <pane>
+    # <cmd>` get a new hc terminal instead of a host pane; the pane id is
+    # meaningless here and ignored. Background always: a foreground run would
+    # stream the re-entered agent's screen into our caller. Anything else under
+    # `pane` is not ours to interpret -- pass it through.
+    [ "${2:-}" = run ] || exec "$REAL" "$@"
+    shift 2
+    [ $# -ge 2 ] || { echo "hc-shim: pane run needs <pane> and a command" >&2; exit 2; }
+    shift  # the (ignored) pane id comes first
+    run_rewritten --bg "$@"
+    ;;
+  *)
+    translate_cwd_args "$@"
+    exec "$REAL" ${translated[@]+"${translated[@]}"}
+    ;;
+esac
