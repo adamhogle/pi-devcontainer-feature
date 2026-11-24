@@ -21,6 +21,8 @@ PI_AGENT_TARGET=/opt/pi/agent
 PI_SSH_TARGET=/ssh-agent
 PI_HERDR_TARGET=/opt/pi/herdr
 PI_HERDR_SOCK_TARGET=/opt/pi/herdr.sock
+PI_HC_TARGET=/opt/pi/herdr-core
+PI_HC_SOCK_TARGET=/opt/pi/herdr-core.sock
 
 # --- credential allowlist --------------------------------------------------
 # The list dev-pi used to forward by default, kept verbatim as the migration
@@ -110,6 +112,13 @@ fi
 
 cid=${running[0]}
 
+# Assigned by the inspect block below through eval, which shellcheck cannot
+# follow and `set -u` would otherwise blame on the first use. Declaring them
+# here keeps a missing key an empty value that the checks below name, instead
+# of an unbound-variable crash with no hint about the container.
+C_USER='' C_AGENT_SRC='' C_SSH_SRC='' C_WORKSPACE='' C_COMPOSE=''
+C_HERDR_SRC='' C_HERDR_SOCK_SRC='' C_HC_SRC='' C_HC_SOCK_SRC=''
+
 # --- read what the container actually is -----------------------------------
 # Verify real state rather than a hash of intent: a spec hash can match while
 # reality has drifted (socket recreated, mount removed).
@@ -149,6 +158,8 @@ out = {
     "C_COMPOSE": labels.get("com.docker.compose.project", ""),
     "C_HERDR_SRC": by_dest.get("/opt/pi/herdr", ""),
     "C_HERDR_SOCK_SRC": by_dest.get("/opt/pi/herdr.sock", ""),
+    "C_HC_SRC": by_dest.get("/opt/pi/herdr-core", ""),
+    "C_HC_SOCK_SRC": by_dest.get("/opt/pi/herdr-core.sock", ""),
 }
 for k, v in out.items():
     print(f"{k}={shlex.quote(v)}")
@@ -303,6 +314,41 @@ if [ "${HERDR_ENV:-}" = 1 ] && [ -n "${HERDR_PANE_ID:-}" ] \
   # Host spelling of the agent-dir mount, for the extension's session-path
   # reporting: herdr's web UI reads the store out here, pi sees it in there as
   # /opt/pi/agent. (share/herdr-shim re-forwards it to subagent panes.)
+  env_args+=(-e "PI_BOX_HOST_AGENT_DIR=$PI_AGENT_DIR")
+fi
+
+# --- herdr-core (hc) bridge --------------------------------------------------
+# dev-up mounted the core socket, the hc binary, the shim and pi's state
+# extension; supply the session half. Gated on THIS shell running inside an hc
+# terminal (hc sets HC_TERMINAL_ID for every program it runs) AND the mounts
+# existing: attaching from a plain terminal or a classic herdr pane leaves this
+# bridge dormant -- the herdr section above covers that path, and the two never
+# fire together (a terminal is either an hc terminal or a herdr pane, not both).
+#
+# Agent status needs no channel from the container: share/hc-agent-state.ts
+# writes OSC 7501 on pi's own events and the exec's -it pty pipes it into the
+# hc terminal. What rides in is the CLI bridge (socket + binary identity for the
+# shim) and the identity the shim needs to rewrite `hc run` into a podman
+# re-entry.
+if [ -n "${HC_TERMINAL_ID:-}" ] && [ -n "$C_HC_SRC" ] && [ -n "$C_HC_SOCK_SRC" ]; then
+  # Group this terminal under the repo in Ovis: hc has no workspaces, terminal
+  # labels are the membership truth there. Only when nothing has grouped it yet
+  # -- a terminal Ovis started for a workspace already carries herdr.space, and
+  # overwriting that would move it out of the group its owner put it in. The
+  # value is prefixed so it cannot be confused with an Ovis workspace id.
+  # Best-effort: never blocks the attach.
+  hc_bin_host=${HERDR_CORE_BIN_PATH:-$(command -v herdr-core 2>/dev/null || command -v hc 2>/dev/null || true)}
+  if [ -n "$hc_bin_host" ] && ! "$hc_bin_host" get "$HC_TERMINAL_ID" --json 2>/dev/null | grep -q '"herdr\.space"'; then
+    "$hc_bin_host" label "$HC_TERMINAL_ID" \
+      "herdr.space=pi-box:$(basename "$root")" "ovis.workspace=$(basename "$root")" >/dev/null 2>&1 || true
+  fi
+
+  env_args+=(-e "HC_SOCKET=$PI_HC_SOCK_TARGET" -e "PI_HC_REAL=$PI_HC_TARGET")
+  # The shim's re-entry identity (same PI_BOX_* names the herdr shim uses; the
+  # subagent's own HC_TERMINAL_ID is assigned by hc, so it is NOT forwarded).
+  env_args+=(-e "PI_BOX_CONTAINER_ID=$cid" -e "PI_BOX_USER=$C_USER")
+  env_args+=(-e "PI_BOX_WORKSPACE=$C_WORKSPACE" -e "PI_BOX_HOST_FOLDER=$root")
+  env_args+=(-e "PI_BOX_FORWARD=$forward_csv")
   env_args+=(-e "PI_BOX_HOST_AGENT_DIR=$PI_AGENT_DIR")
 fi
 

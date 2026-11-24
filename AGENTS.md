@@ -28,6 +28,10 @@ finding containers `dev-up` created, or verify a mount nobody makes.
 | `/ssh-agent` | `dev-up` mount target | `dev-pi` sets `SSH_AUTH_SOCK` to it |
 | `/opt/pi/herdr`, `/opt/pi/herdr.sock` | `dev-up` mount targets | `dev-pi` verify + `HERDR_SOCKET_PATH`, `share/herdr-shim` `PI_HERDR_REAL` default |
 | `/usr/local/bin/herdr` | `dev-up` mounts `share/herdr-shim` there | pi's mux detection (`hasCommand("herdr")`) |
+| `/opt/pi/herdr-core`, `/opt/pi/herdr-core.sock` | `dev-up` mount targets | `dev-pi` verify + `HC_SOCKET`/`PI_HC_REAL`, `share/hc-shim` defaults |
+| `/usr/local/bin/hc` | `dev-up` mounts `share/hc-shim` there | container-side hc calls |
+| `/opt/pi/agent/extensions/hc-agent-state.ts` | `dev-up` mounts `share/hc-agent-state.ts` there | pi loads it as an extension; emits OSC 7501 under hc |
+| `HC_TERMINAL_ID` | set by hc for every program it runs | `dev-pi`'s hc-bridge gate, the extension's own gate (the herdr section's analogue is `HERDR_ENV`/`HERDR_PANE_ID`) |
 | `pi.box.folder=<root>` | `dev-up` `--id-label` | `dev-pi` container lookup, `dev-down` cleanup |
 | `resolve_root()` | shared by all three | `dev-pi` and `dev-down` — must be **byte-identical** |
 
@@ -146,13 +150,28 @@ what runs. Test a script change by using it: `dev-up` in a scratch workspace, th
   so anything requiring a mount belongs in `dev-up`, never `dev-pi`.
 * **`share/` is for files that run *inside* the container; `bin/` is for the host.**
   `install.sh` symlinks every file in `bin/` onto the host `PATH`. `share/herdr-shim` is
-  named `herdr` once mounted, so putting it in `bin/` would shadow the user's real herdr on
-  the host. `dev-up` locates `share/` relative to its own resolved path (`readlink -f`), which
+  named `herdr` once mounted, and `share/hc-shim` `hc`, so putting either in `bin/` would
+  shadow the user's real binary on the host. `share/hc-agent-state.ts` is not on a PATH at
+  all: it mounts inside the agent dir, where pi looks for extensions.
+  `dev-up` locates `share/` relative to its own resolved path (`readlink -f`), which
   is what makes the symlink install still work.
 * **The herdr bridge is opt-in and must never block provisioning.** `dev-up` adds the three
   mounts only when the binary, a live socket and the shim all exist; `dev-pi` forwards
   `HERDR_*` only when its own shell is inside a herdr pane *and* the mounts are present.
   Either half missing means headless, exactly as before -- never an error.
+* **The hc bridge follows the same rule, on its own gate.** herdr-core (`hc`) is the newer
+  runtime, the one Ovis serves agents on as a standalone service. `dev-up` mounts the hc
+  binary, the core socket, `share/hc-shim` and `share/hc-agent-state.ts` only when all of
+  them exist and the core is listening; `dev-pi` forwards `HC_SOCKET`/`PI_HC_REAL` and the
+  `PI_BOX_*` identity only when its own shell has `HC_TERMINAL_ID`. The two bridges are
+  **independent mounts that coexist** -- distinct paths (`/opt/pi/herdr-core`,
+  `/usr/local/bin/hc`) so neither shadows the other -- and `dev-pi` fires at most one per
+  session, because a terminal is either an hc terminal or a herdr pane. Agent **status**
+  needs no socket on hc: it is a pty protocol. `share/hc-agent-state.ts` writes OSC 7501 on
+  pi's own events and `podman exec -it` pipes it into the hc terminal, which is what Ovis and
+  `hc get` read; that file is why pi's side of the bridge is one mount and no daemon. Keep
+  the two status paths separate -- classic herdr reports over its socket API, hc over OSC --
+  and gate each so a session never reports twice.
 
 ## Invariants
 
@@ -241,6 +260,8 @@ bin/dev-up                         provision: feature + mounts + identity label
 bin/dev-pi                         strict attach: verify, then podman exec pi
 bin/dev-down                       remove containers for a workspace folder
 share/herdr-shim                   container-side herdr: rewrites `pane run` to re-enter the container
+share/hc-shim                      container-side hc: rewrites `run` to re-enter the container
+share/hc-agent-state.ts            container-side pi status under hc: OSC 7501 reports on pi's events
 install.sh                         symlink bin/* into ~/.local/bin (share/ is mounted, not symlinked)
 scripts/check-feature-metadata.mjs metadata gate
 scripts/check-version-bump.sh      version gate (pull requests, src/ only)

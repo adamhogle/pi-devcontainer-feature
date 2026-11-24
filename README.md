@@ -45,6 +45,36 @@ and headless as before. It never stops a container coming up. Note that forwardi
 socket gives the container full control of your herdr session -- fine for a personal machine,
 worth knowing before it goes into a shared image.
 
+### On herdr-core (`hc`), the newer runtime
+
+[herdr-core](https://releases.herdr.dev/core/) is the runtime the Herdr app is built on; its
+CLI is `hc`, and Ovis serves agents on it as a standalone service rather than as a herdr
+plugin. The same shape bridges it, at its own paths so both can be mounted at once: the core's
+socket at `/opt/pi/herdr-core.sock`, the binary at `/opt/pi/herdr-core`, `share/hc-shim` at
+`/usr/local/bin/hc`, and `share/hc-agent-state.ts` inside the mounted agent dir. `dev-pi`
+supplies the session half -- `HC_SOCKET`, `PI_HC_REAL` and the `PI_BOX_*` identity -- only when
+it is itself running in an hc terminal (`HC_TERMINAL_ID`), so the two bridges never fire
+together.
+
+Status travels differently here: hc has no agent socket, it reads what the terminal's program
+prints. `share/hc-agent-state.ts` writes an OSC 7501 report on pi's own events, and the exec's
+`-it` pty carries it into the hc terminal -- which is what `hc get` and the Ovis app read. That
+is why pi's side of this bridge is one mount and no daemon.
+
+What the shim does is the CLI: `hc run` from inside the container would start a **host**
+terminal running host paths, so `run` (and classic `pane run`, for agents trained on the old
+bridge) is rewritten to a `podman exec` back into this container, with `--cwd` mapped from
+container to host paths and a leading `pi` routed to `dev-pi` so a subagent inherits the
+session policy instead of starting a second agent with none of it. Launch from a terminal hc
+or Ovis started for you: `hc run --bg --name work dev-pi`.
+
+## Knobs for the bridges
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `HERDR_BIN_PATH` / `HERDR_SOCKET_PATH` | `PATH` lookup / `~/.config/herdr/herdr.sock` | herdr bridge inputs for `dev-up` |
+| `HERDR_CORE_BIN_PATH` / `HC_SOCKET_PATH` | `PATH` lookup (`herdr-core` or `hc`) / `$XDG_RUNTIME_DIR/herdr-core/default.sock` | hc bridge inputs for `dev-up` |
+
 ## Install the host scripts
 
 ```sh
